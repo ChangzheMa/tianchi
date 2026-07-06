@@ -40,6 +40,12 @@ stock_code,transaction_date,capital_type,capital_intention
 - Task1 评估：类间区分度 + 类内聚合度（Wasserstein + DTW 距离）
 - Task2 评估：加权 F1 Score
 
+#### A榜评分实测结论（2026-07-07，平台提交对照实验）
+- **Task1 只看聚类划分**：`pattern_type` 标签名、`pattern_explanation` 均**不计分**——标签双射改名（大单吸筹→组1…）、说明置换后分数不变。
+- **Task2 只有 `capital_type` 计分**，为**监督加权 F1、标签身份重要**——三类循环轮换（游资→量化→散户→游资）后分数改变。
+- **`capital_intention` 不计分**——随机打乱后分数不变。
+- 推论：A榜只需优化 ①`pattern_type` 的聚类划分质量、②`capital_type` 的三分类准确率；explanation 与 intention 是 B 榜可解释性。
+
 ## 虚拟环境
 ```bash
 source .venv/bin/activate
