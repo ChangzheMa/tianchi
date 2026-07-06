@@ -1,0 +1,763 @@
+项目简介
+一、赛题背景介绍
+本赛题聚焦构建一套“市场参与者交易行为识别与资金流向分析”的体系化解决方案，要求结合逐笔成交数据、订单簿微观结构特征、个股基本面等信息，实现从海量高频数据中自动解析不同参与者的买卖行为和资金流向，识别背后真实意图的模型——例如识别不同订单的资金属性（游资/量化私募/散户等），分析资金背后意图（吸筹、试盘、对倒、拉升、出货等），并生成清晰易懂的资金流向分析结果（当前谁占主导，买入还是卖出，真实意图是什么）。解决该问题将帮助投资者穿透复杂盘面、理性跟随不同机构资金动向，优化买卖时机，降低被游资或虚假挂单误导的风险，实现从“凭感觉跟风”到“有数据支撑的辅助决策”。
+在股票投资中，市场参与者（公募基金、量化私募、游资等）的大额买卖行为往往对股价产生显著影响，其资金流向被视为重要的行情风向标。但普通投资者面对 Level-2 数据时普遍存在两大痛点：
+● 信息"碎片化"：单个指标难以还原机构真实的建仓、拉抬或出货意图，机构常通过拆单、对倒等方式隐藏真实动作。
+● 解读"滞后性"：多数资金流向指标基于日线统计，盘中动态变化无法捕捉，等信号明确时股价往往已大幅偏离理想买点。
+通俗理解：假设你是一个散户，看到某只股票突然放量大涨。你想知道——这是游资在拉涨停准备出货，还是量化基金在程序化做 T+0 套利？如果是前者，你该跟；如果是后者，你该躲。本赛题就是训练 AI 来自动回答这个问题。
+参赛者基于A股个股的逐笔委托、逐笔成交、逐笔撤单、十档盘口快照四大类全量Level2数据，构建完整的方法论体系，精细化区分游资/量化两类机构资金，识别各类市场参与者的买卖方向与交易意图，最终输出可落地的交易模式识别与资金流向分析结果。
+二、任务介绍
+本赛题包含两大核心任务：
+Task1：交易模式识别（无监督聚类任务）
+● 核心目标：基于全量Level2特征，对单日个股的交易行为进行无监督聚类，划分出具有显著区分度的交易模式，输出可解释的模式类型与业务说明；
+● 核心要求：聚类结果需满足「类内高聚合、类间高区分」，模式解释需贴合A股市场真实交易逻辑，无业务常识错误；
+● 输出文件：pattern_reco.csv，固定4个字段，顺序不可修改：stock_code(股票代码)、transaction_date(交易日期)、pattern_type(交易模式类别)、pattern_explanation(交易模式详细说明)。
+Task2：资金类型与交易意图识别（无真值规则判别任务）
+● 核心目标：基于Level2数据特征，识别单日个股的主导资金类型，同时判断资金的核心交易意图；
+● 核心要求：资金类型仅可输出「游资/量化/散户」三类，交易意图仅可输出「买入/卖出/T0交易」三类，严格匹配赛事指定分类；
+● 输出文件：predict_result.csv，固定4个字段，顺序不可修改：stock_code(股票代码)、transaction_date(交易日期)、capital_type(主导资金类型)、capital_intention(资金交易意图)。
+三、任务数据与数据集构成
+数据整体规划
+数据集类型	覆盖范围	数据周期	更新规则
+样例训练集	单只个股（继峰股份603997.SH）	2026年5月7日单日	固定不变，用于本地调试
+A榜测试集	100只跨行业、跨市值个股	2026年6月9日-7月10日	赛事周期内每日增量更新
+B榜测试集	全新100只跨行业、跨市值个股	2026年7月13日-7月24日	赛事周期内每日增量更新
+原始数据字段构成（仅供参考）
+本次赛事提供的Level2原始数据按"日期目录/股票代码/三类CSV文件"的层级组织，编码格式为GBK，列名为中文。每个股票目录下包含三源数据文件：
+数据文件	核心字段（中文）	业务含义
+行情.csv	万得代码(股票代码)、交易所代码、自然日、时间(HHMMSSmmm)、成交价、成交量、成交额、成交笔数、BS标志、当日累计成交量、当日成交额、最高价、最低价、开盘价、前收盘、加权平均叫卖价、加权平均叫买价、叫卖总量、叫买总量、申买价1~10/申买量1~10、申卖价1~10/申卖量1~10	3秒Level-2行情快照，含十档盘口量价数据，是识别资金行为的核心
+逐笔成交.csv	时间(HHMMSSmmm)、BS标志('B'买/'S'卖)、成交价格、成交数量	逐笔成交明细，直接提供主动买卖方向标签
+逐笔委托.csv	时间(HHMMSSmmm)、委托类型('U'撤单/'1'成交/'0'新增)、委托代码('B'/'S')、委托价格、委托数量	逐笔委托明细，含撤单事件，是识别量化行为的关键
+数据目录结构示例：
+data_root/
+├── 20260618/                 ← 日期目录
+│   ├── 600000/               ← 股票代码目录
+│   │   ├── 行情.csv          ← 3秒快照(GBK, 中文列名)
+│   │   ├── 逐笔成交.csv       ← 逐笔成交(GBK, 中文列名)
+│   │   └── 逐笔委托.csv       ← 逐笔委托(GBK, 中文列名)
+│   ├── 600001/
+│   └── ...
+└── 股票样本.xlsx              ← 100只目标股票列表
+关键说明：
+● 时间字段为HHMMSSmmm格式的整数（如93000000表示9:30:00.000），需通过_parse_time_to_seconds()转换为日内秒数后做时段判定；
+● 行情.csv中的成交量/成交额/成交笔数/当日累计成交量均为当日累计值，需diff后才能得到逐笔量；
+● 逐笔成交.csv的BS标志直接提供主动买卖方向（'B'=买方主动,'S'=卖方主动），无需像旧版基于价格变动推断；
+● 逐笔委托.csv的委托类型区分撤单('U')/成交('1')/新增('0')，是构建CB撤单行为特征的核心。
+官方参考特征集
+赛事官方提供了7大类标准化参考特征集，是本次赛题的核心特征依据，所有特征均基于当日盘中可获取数据计算，无未来函数风险：
+1. OSS大单分级特征：超大/大/中/小单的金额、笔数占比，游资基准占比等；
+2. RS订单时序特征：成交间隔变异系数、拆单相似度、订单爆发率、买卖间隔分化等；
+3. CB撤单系列特征：快速撤单占比、买卖撤单分化、撤单间隔变异系数等；
+4. AP主动成交特征：主动买卖占比、连续成交笔数、单边强度、净成交占比等；
+5. OBP盘口微观特征：最优档位挂单、价差穿越、挂单偏移、盘口失衡度等；
+6. PD价格发现特征：多维度价格冲击、盘口失衡、成交效率等；
+7. PI日内时段特征：开盘30分钟/尾盘10分钟成交占比、赫芬达尔集中度、价格波动等。
+四、任务规则及提交说明
+提交格式要求
+● 所有结果文件需打包为submit.zip压缩包，内部包含pattern_reco.csv和predict_result.csv两个文件，不得嵌套文件夹；
+● 两个CSV文件的字段顺序、名称必须与赛事要求完全一致，不得修改、新增、删除字段；
+● 资金类型仅可输出「游资/量化/散户」，交易意图仅可输出「买入/卖出/T0交易」；
+● 所有结果需基于当日盘中可获取数据生成，无未来函数；
+评分规则
+A/B榜总得分 = 交易模式识别分 × 0.4 + 参与者识别分 × 0.6，其中：
+（1）Task1 交易模式识别（40%）：基于轮廓系数、CH指数、Wasserstein距离、DTW时序距离四大指标，评估聚类的类内聚合度与类间区分度；
+1. 轮廓系数：衡量类内聚合度与类间区分度，取值范围[-1,1]，越接近1效果越好；
+2. CH指数：衡量类间方差与类内方差的比值，值越高聚类效果越好；
+3. Wasserstein距离：衡量不同交易模式的分布差异，距离越大区分度越好；
+4. DTW时序距离：衡量不同交易行为的时间序列差异，距离越大区分度越好。
+（2）Task2 资金类型识别【参与者识别】（60%）：基于平台真实资金标签，计算加权F1-Score，评估分类准确率。
+5. 加权F1-Score：基于真实标签计算，是分类任务的核心评分指标，越接近1效果越好；
+6. 精确率：预测为某类资金的样本中，真实为该类的比例，衡量查准率；
+7. 召回率：真实为某类资金的样本中，被正确预测的比例，衡量查全率。
+合规红线要求
+（1）严禁使用未来函数：所有特征、模型、规则仅可使用当日盘中可获取的Level2数据，不得使用当日收盘后、未来交易日的任何数据；
+（2）严禁硬编码个股标签：不得针对特定个股、特定日期设置固定的标签规则，所有规则需具备普适性；
+（3）代码可复现性要求：B榜前15名队伍需提交完整项目代码，确保评审可完整复现结果，代码逻辑需与方案报告一致。
+分析赛题、对问题进行建模
+一、赛题核心分析
+赛事背景
+本赛题是国内金融AI领域面向全量Level2高频数据的机构资金识别专项赛事，核心解决A股市场中机构资金行为隐蔽、普通投资者无法穿透的行业痛点。本赛题希望参赛者基于A股个股的逐笔委托、逐笔成交、逐笔撤单和十档盘口快照数据（提示：可通过淘宝、闲鱼、百度网盘等渠道自行获取相关数据），构建一套完整方法论体系，对游资/量化两类机构进行精细化的区分，识别各类参与者的买卖方向、买卖意图。整体方法的技术手段不做强制要求，鼓励参赛者结合大模型等AI技术和经典量化模型给出更好的解决方案。
+问题本质
+本赛题的核心是无监督场景下的金融时间序列数据挖掘与行为识别问题，可拆解为两个相互耦合的子问题：
+（1）Task1 无监督聚类问题：无任何标注标签，基于高维的Level2时间序列特征，对单日个股的交易行为进行分簇，核心目标是最大化类内聚合度与类间区分度，同时为每个簇赋予可解释的业务含义，自由打标，不限制个数；
+（2）Task2 无真值规则判别问题：无官方提供的训练标签，基于A股量化交易的行业常识与资金行为规律，构建多维度的量化打分规则，区分游资/量化/散户三类资金，同时识别资金的交易意图，核心目标是最大化与实盘真实资金行为的匹配度。
+问题的核心难点在于：
+● 高频Level2数据维度高、噪声大，需要从海量数据中提取与机构交易行为强相关的有效特征；
+● 机构交易行为具有极强的隐蔽性，需要穿透拆单、对倒、虚假挂撤单等操作，识别真实的资金属性与意图；
+● 无任何标注标签，无法使用传统的有监督机器学习算法，所有方案需基于金融逻辑与无监督方法构建，同时保证可解释性。
+Baseline技术建模框架
+Baseline技术建模框架分为5个核心层级，从三源CSV数据输入到结果输出形成完整闭环，全程无未来函数、无监督学习，完全贴合赛事要求：
+三源Level2 CSV数据输入（行情.csv / 逐笔成交.csv / 逐笔委托.csv，GBK中文列名）
+        ↓
+数据预处理层：HQ_COL_MAP中文列名映射、_parse_time_to_seconds时间标准化、列裁剪+dtype优化、异常值过滤、时序排序
+        ↓
+特征工程层：extract_features提取10大类约100维特征（OSS/TRD/RS/CB/AP/PI/OBP/PD/盘口动态/资金集中度），按个股+交易日聚合为特征矩阵
+        ↓
+建模推理层
+    ├ Task1：_normalize_features_robust(RobustScaler+Rank混合) → 4模型融合(KMeans/DBSCAN/Agglomerative/GMM)投票 → PATTERN_RULES贪心匹配10种交易模式 → 多样性校准(6%-18%)
+    └ Task2：两阶段识别(KMeans行为组聚类 → 组内Z-score归一化 → 游资/量化/散户三因子打分) → buy/sell_signal多维度意图判定 → 多样性校准(22%-45%)
+        ↓
+后处理层：_post_filter_calibrate在目标股票子集上重新平衡分布
+        ↓
+结果输出层：save_results格式校验，生成pattern_reco.csv + predict_result.csv
+二、任务分层拆解
+Baseline完整开发流程可拆解为4个核心层级，每个层级有明确的目标、输入、输出与核心工作，形成完整的落地闭环：
+① 数据理解层
+● 目标：深入理解三源 Level-2 CSV 数据的结构和含义。
+● 关键动作：
+  ○ 熟悉三源CSV（行情.csv/逐笔成交.csv/逐笔委托.csv）的中文列名与业务含义，通过 HQ_COL_MAP 统一映射为英文字段。
+  ○ 关键发现 1：行情.csv 的 成交量/成交额/成交笔数/当日累计成交量 均为当日累计值，但 逐笔成交.csv 的 成交数量 是逐笔值，特征工程应直接基于逐笔成交的 amount = 成交价格 × 成交数量 分级，无需 diff 累计值。
+  ○ 关键发现 2：时间 字段为 HHMMSSmmm 格式整数（如 93000000=9:30:00.000），必须通过 _parse_time_to_seconds() 转换为日内秒数后做时段判定，不能用 UTC 时间戳。
+  ○ 关键发现 3：逐笔成交.csv 的 BS标志（'B'买/'S'卖）直接提供主动买卖方向标签，无需像旧版基于价格变动推断；逐笔委托.csv 的 委托类型（'U'撤单/'1'成交/'0'新增）是构建 CB 撤单行为特征的核心。
+② 特征工程层
+● 目标：从三源高频数据中提取对交易行为和资金流向有区分度的特征。
+● 关键动作：
+  ○ OSS 大单分级：基于 逐笔成交.csv 的 amount 字段按超大单(≥50万)/大单(≥10万)/中单(≥4万)/小单(<4万) 分级统计金额和笔数占比。
+  ○ TRD 交易结构：平均成交额/量、成交额标准差、总笔数。
+  ○ RS 订单时序：成交间隔变异系数、拆单相似度、订单爆发率、高频交易占比、间隔偏度/峰度。
+  ○ CB 撤单行为：基于 委托类型=='U' 计算撤单率、撤单成交比、买卖撤单分化、撤单金额占比。
+  ○ AP 主动成交：基于 BS标志 计算主动买卖占比、净成交占比、连续买卖笔数、单边强度。
+  ○ PI 日内时段：8个半小时时段成交占比、开盘30分钟/尾盘10分钟占比、时段集中度（基于 seconds 计算）。
+  ○ PD 价格发现：从 行情.csv 提取开盘跳空、日内收益、振幅、涨跌停距离、VWAP偏离、价格反转、脉冲检测、大单方向一致性。
+  ○ OBP 盘口衍生：从十档申买/申卖价量提取最优价差、盘口失衡度、大单挂单占比、加权价差统计、深度变化率。
+  ○ 盘口动态：价差波动、相对价差、买卖深度比变化、净买盘变化。
+  ○ ** 资金集中度**：赫芬达尔指数、Top5%大单占比、成交额熵、委托成交比、撤单聚集度、间隔自相关、买卖不对称性、连续同向笔数。
+③ 模型构建层
+● 目标：构建交易模式聚类和参与者识别的模型。
+● 关键动作：
+  ○ Task 1（4模型融合聚类）：_normalize_features_robust（50% RobustScaler + 50% Rank 百分位）后，运行 KMeans++/DBSCAN/Agglomerative/GMM 四模型多数投票融合；通过 PATTERN_RULES（10种模式 × 6特征 × 方向）贪心匹配聚类到语义模式；多样性校准将每种模式占比约束在 6%-18%。
+  ○ Task 2（两阶段识别）：Stage1 用 KMeans 在10个行为特征上将全市场聚为3-6个行为组；Stage2 组内 Z-score 归一化后计算游资/量化/散户三因子加权得分（15/15/13维特征），取最高分确定资金类型；意图用 buy_signal/sell_signal 多维度（净买卖比、VWAP偏离、大单买入比、盘口失衡、日内收益）打分判定买入/卖出/T0交易。
+④ 结果输出层
+● 目标：按照赛题要求格式输出结果文件，并进行格式校验。
+● 关键动作：
+  ○ 生成 pattern_reco.csv：stock_code, transaction_date, pattern_type, pattern_explanation。
+  ○ 生成 predict_result.csv：stock_code, transaction_date, capital_type, capital_intention。
+  ○ 格式校验：字段顺序、合法值检查（capital_type 仅含游资/量化/散户，intention 仅含买入/卖出/T0交易）。
+  ○ 编码为 UTF-8-sig，打包为 submit.zip 提交。
+三、开发建议
+1. 从简单开始：先跑通 Baseline，理解数据流和任务目标，再逐步优化特征和模型。
+2. 重视特征工程：高频数据的特征提取是核心，建议多尝试盘口微观结构特征（OFI、价差动态、大单冲击等）。
+3. 注意累计值转逐笔：volume/amount/transactions/bigordervolume 均为累计值，直接使用会导致 OSS 分类错误。
+4. 注意时区问题：date 字段是 UTC 时间戳，hh 字段是北京时间小时。时段判断必须使用 hh。
+5. 伪标签/规则质量：Task 2 没有真实标签，规则设计的金融逻辑合理性直接影响模型效果。
+6. 代码可复现性：固定随机种子，使用相对路径，代码注释充分，确保环境可复现。
+7. 善用已有字段：训练数据中很多字段（如 changepercent、rangepercent、bigordervolume）已经直接有值，直接使用比重新计算更准确。
+四、解题思考过程
+面对本赛题，完整的解题思考过程可分为以下6个核心步骤，从问题理解到方案落地形成完整闭环，适合快速上手，作为baseline方案的解题逻辑：
+步骤1：深度审题，明确核心要求与约束
+首先，反复研读赛题文档，明确两个核心任务的边界、要求与合规约束：
+1. 明确Task1是无监督聚类任务，无任何标注标签，核心是「类内聚合、类间区分」，输出需要有明确的业务解释；
+2. 明确Task2是无真值的规则判别任务，无官方训练标签，核心是贴合A股资金行为规律，输出严格匹配赛事指定的分类；
+3. 明确合规红线：严禁使用未来函数、严禁硬编码标签、严禁使用平台评测真值，所有结果需基于当日盘中数据生成；
+4. 明确提交格式：两个CSV文件的字段顺序、名称、编码必须完全符合要求，不得修改。
+步骤2：数据探查，理解数据结构与业务含义
+对获取的个股数据进行全面的探查，理解数据的结构、字段含义、分布特征：
+1. 查看原始数据段，区分基础信息、逐笔成交、盘口快照、行情统计四大类数据，理解每个字段的业务含义；
+2. 查看数据的时间粒度、覆盖范围，明确「股票代码+交易日期」是最小的样本单元；
+3. 探查核心指标的分布特征，比如成交量、成交额、大单占比的分布，识别异常值，为后续的数据清洗和特征提取提供依据。
+步骤3：核心问题拆解，方案选型
+基于对赛题和数据的理解，将核心问题拆解为可落地的子问题，进行方案选型：
+1. 数据预处理方案：针对高频Level2数据的特点，设计「读取→清洗→转换→JSON解析→排序」的标准化预处理流程，解决数据噪声、格式不统一的问题；
+2. 特征工程方案：基于赛事官方提供的7大类参考特征集，设计「官方特征全量落地+盘口衍生特征补充」的特征体系，将高频时间序列数据转换为结构化的特征矩阵；
+3. Task1聚类方案：针对无标签的场景，选择KMeans作为基础聚类算法，该算法成熟、稳定、可解释性强，适合作为Baseline方案；同时设计「多条件联合匹配」的模式命名逻辑，避免单一特征误判；
+4. Task2分类方案：针对无真值的场景，放弃有监督机器学习算法，选择「多因子量化打分」的方案，基于A股行业常识构建规则，同时解决不同特征的量纲差异问题，确保方案的可解释性与合规性；
+5. 意图识别方案：采用「主动成交+盘口失衡+资金类型」的联合规则，提升意图识别的准确率与金融逻辑合理性。
+步骤4：方案落地，全流程跑通
+基于选型的方案，编写代码，先在样例训练集上跑通全流程，验证方案的可行性：
+1. 先编写数据预处理代码，处理样例数据，验证JSON解析、格式转换的逻辑；
+2. 编写特征提取代码，基于预处理后的数据，提取全量官方特征与盘口衍生特征，生成特征矩阵；
+3. 编写Task1聚类代码，对特征矩阵进行聚类，统计簇画像，匹配交易模式，验证聚类的效果；
+4. 编写Task2打分代码，计算多因子得分，判定资金类型与交易意图，验证规则的合理性；
+5. 编写结果输出代码，生成符合赛事要求的CSV文件，验证格式的合规性。
+步骤5：效果评估，迭代优化
+在全流程跑通后，基于离线评估指标，对方案进行迭代优化：
+1. 聚类效果优化：调整聚类数、特征组合、距离度量方式，提升轮廓系数、CH指数，增强类间区分度和类内聚合度；
+2. 分类规则优化：调整打分维度、权重配置、特征阈值，提升规则的金融逻辑合理性，避免错判；
+3. 特征工程优化：基于特征的区分度，筛选有效特征，去除无效特征，同时新增更贴合业务逻辑的衍生特征；
+4. 逻辑优化：优化交易模式的匹配规则、交易意图的判定规则，增强方案的可解释性与合理性。
+步骤6：方案整理，提交准备
+完成方案优化后，整理完整的项目代码、方案报告，准备提交：
+1. 代码整理：按照赛事要求，整理项目代码结构，设置清晰的模块划分，编写详细的代码注释，确保代码的可读性与可复现性；
+2. 文档整理：编写完整的方案报告，说明方案设计、特征工程、模型逻辑、效果评估、优化方向等内容；
+3. 提交文件校验：再次校验两个CSV文件的字段、格式、数据，确保符合赛事要求；
+4. 打包提交：将所有文件打包为submit.zip，完成线上提交。
+Baseline方案详解
+一、完整代码【需根据自己获取的个股数据调整数据处理代码】
+暂时无法在飞书文档外展示此内容
+方案架构（）：三源CSV数据 → HQ_COL_MAP预处理 → 10大类约100维特征
+              → 4模型融合聚类(Task1, k=10) + 两阶段识别(Task2, 3类资金)
+              → 多样性校准 + 后处理校准 → pattern_reco.csv / predict_result.csv
+
+运行：
+  python main.py                                           # 默认跑20260618目录全部股票
+  python main.py -d 20260618 20260619 -b ./data -o ./out   # 指定日期/目录/输出
+  python main.py -n 20                                      # 仅跑前20只股票（调试）
+
+输出：pattern_reco.csv / predict_result.csv（UTF-8-sig编码）
+二、Baseline概况
+项目	说明
+Baseline版本	main.py（AFAC2026 赛题一 Baseline）
+算法框架	三源CSV预处理 + 10大类特征工程 + 4模型融合聚类 + 两阶段资金识别 + 多样性校准
+Task 1 模型	KMeans++ / DBSCAN / Agglomerative / GMM 四模型多数投票融合（k=10）+ PATTERN_RULES贪心匹配 + 多样性校准(6%-18%)
+Task 2 模型	两阶段：KMeans行为组聚类(3-6组) → 组内Z-score归一化 → 游资/量化/散户三因子打分(15/15/13维) + buy/sell_signal多维度意图判定
+特征工程	HQ_COL_MAP中文列名映射 + 逐笔成交amount直接分级 + _parse_time_to_seconds时间标准化 + 10大类约100维特征
+量纲处理	RobustScaler + Rank百分位混合（Task1）+ 组内Z-score归一化（Task2）
+校准机制	模式分布校准(6%-18%) + 资金类型校准(22%-45%) + 意图校准(18%-40%/T0≥12%) + 目标股票后处理校准
+评估指标	轮廓系数 + CH指数 + 模式/资金分布合法性校验
+编程语言	Python 3.8+
+核心依赖	pandas, numpy, scikit-learn, openpyxl
+入口文件	main.py
+输出文件	pattern_reco.csv, predict_result.csv
+随机种子	RANDOM_SEED = 42（全局固定，确保可复现）
+三、Baseline核心代码及解释
+本Baseline方案的代码分为5个核心模块，分别对应数据处理、特征提取、模型训练、结果预测、离线评估，每个模块都有详细的代码和解释，完全适配赛事提供的训练数据。
+数据处理
+核心代码位于 load_snapshot / load_trades / load_orders 三个函数，分别独立读取三源 Level2 CSV 数据，通过 HQ_COL_MAP 将中文列名统一映射为英文字段：
+# 行情快照列名映射 (GBK中文 → 英文)
+HQ_COL_MAP = {
+    '万得代码': 'code', '交易所代码': 'exch_code', '自然日': 'date',
+    '时间': 'time', '成交价': 'price', '成交量': 'volume',
+    '成交额': 'amount', '成交笔数': 'trade_count', 'BS标志': 'bs_flag',
+    '当日累计成交量': 'cum_volume', '当日成交额': 'cum_amount',
+    '最高价': 'high', '最低价': 'low', '开盘价': 'open', '前收盘': 'prev_close',
+    '加权平均叫卖价': 'weighted_ask', '加权平均叫买价': 'weighted_bid',
+    '叫卖总量': 'total_ask_vol', '叫买总量': 'total_bid_vol',
+}
+for i in range(1, 11):
+    HQ_COL_MAP[f'申卖价{i}'] = f'ask_price_{i}'
+    HQ_COL_MAP[f'申卖量{i}'] = f'ask_vol_{i}'
+    HQ_COL_MAP[f'申买价{i}'] = f'bid_price_{i}'
+    HQ_COL_MAP[f'申买量{i}'] = f'bid_vol_{i}'
+
+def _parse_time_to_seconds(time_val):
+    """HHMMSSmmm → 日内秒数"""
+    t = np.int64(time_val)
+    return (t // 10000000) * 3600 + ((t // 100000) % 100) * 60 + ((t // 1000) % 100)
+
+def load_snapshot(stock_code, date_str, base_dir='.'):
+    """加载3秒Level-2行情快照（列裁剪+dtype优化加速）"""
+    fpath = os.path.join(base_dir, date_str, stock_code, '行情.csv')
+    df = pd.read_csv(fpath, encoding='gbk', usecols=use_cols, dtype=dtype_map, low_memory=False)
+    df = df.rename(columns=HQ_COL_MAP)
+    df['seconds'] = _parse_time_to_seconds(df['time'].values)
+    df['hour'] = df['seconds'] // 3600
+    df['stock_code'] = stock_code
+    df['transaction_date'] = date_str
+    df = df.sort_values('seconds').reset_index(drop=True)
+    return df
+
+def load_trades(stock_code, date_str, base_dir='.'):
+    """加载逐笔成交数据（含BS标志）"""
+    df = pd.read_csv(fpath, encoding='gbk', usecols=['时间','BS标志','成交价格','成交数量'], low_memory=False)
+    df = df.rename(columns={'时间':'time','BS标志':'side','成交价格':'price','成交数量':'volume'})
+    df['seconds'] = _parse_time_to_seconds(df['time'].values)
+    df['amount'] = df['price'] * df['volume']  # 逐笔成交额，直接用于OSS大单分级
+    return df
+
+def load_orders(stock_code, date_str, base_dir='.'):
+    """加载逐笔委托数据（含委托类型：U撤单/1成交/0新增）"""
+    df = pd.read_csv(fpath, encoding='gbk', usecols=['时间','委托类型','委托代码','委托价格','委托数量'], low_memory=False)
+    df = df.rename(columns={'时间':'time','委托类型':'order_type','委托代码':'side','委托价格':'price','委托数量':'volume'})
+    df['seconds'] = _parse_time_to_seconds(df['time'].values)
+    return df
+重要说明：
+● 三源独立读取：行情.csv（3秒快照）、逐笔成交.csv（逐笔成交）、逐笔委托.csv（逐笔委托）分别加载，避免混合读取造成的字段错位。所有 CSV 均为 GBK 编码、中文列名，通过 HQ_COL_MAP 统一映射为英文字段。
+● 时间标准化：时间 字段为 HHMMSSmmm 格式整数（如 93000000=9:30:00.000），通过 _parse_time_to_seconds() 转换为日内秒数后做时段判定（开盘30分钟 9:30-10:00、尾盘10分钟 14:50-15:00、8个半小时时段），不能用 UTC 时间戳。
+● 逐笔成交直接分级：逐笔成交.csv 的 成交数量 是逐笔值，amount = 成交价格 × 成交数量 直接得到逐笔成交额，按超大单(≥50万)/大单(≥10万)/中单(≥4万)/小单(<4万) 分级，无需对 行情.csv 的累计值做 diff。
+● BS标志直接可用：逐笔成交.csv 的 BS标志（'B'买/'S'卖）直接提供主动买卖方向标签，无需像旧版基于价格变动推断。
+● 委托类型识别撤单：逐笔委托.csv 的 委托类型（'U'撤单/'1'成交/'0'新增）是构建 CB 撤单行为特征的核心。
+特征工程（10大类约100维）
+核心函数 extract_features(stock_code, date_str, base_dir) 从三源数据提取特征，返回单行dict。过滤有效交易时段(9:25-15:05)后，基于逐笔成交.csv的amount字段直接分级，无需diff处理累计值。
+OSS 大单分级（8维）——基于逐笔成交额分级：
+# 阈值：超大单 ≥50万元，大单 ≥10万元，中单 ≥4万元，小单 <4万元
+mega = df_trd['amount'] >= 500000
+large = (df_trd['amount'] >= 100000) & (df_trd['amount'] < 500000)
+mid = (df_trd['amount'] >= 40000) & (df_trd['amount'] < 100000)
+small = df_trd['amount'] < 40000
+
+for mask, key in [(mega, 'oss_mega'), (large, 'oss_large'),
+                   (mid, 'oss_medium'), (small, 'oss_small')]:
+    f[f'{key}_amount_pct'] = df_trd.loc[mask, 'amount'].sum() / ta
+    f[f'{key}_count_pct'] = mask.sum() / n_trd if n_trd > 0 else 0
+TRD 交易结构（4维）：
+f['trd_avg_trade_amount'] = ta / n_trd      # 平均成交额
+f['trd_avg_trade_volume'] = tv / n_trd      # 平均成交量
+f['trd_trade_amount_std'] = df_trd['amount'].std()  # 成交额标准差
+f['trd_total_count'] = n_trd                # 总笔数
+RS 订单时序（6维）——成交间隔规律性：
+intervals = df_trd['seconds'].diff().dropna()
+f['rs_interval_cv'] = intervals.std() / (intervals.mean() + 1e-8)  # 间隔变异系数
+f['rs_split_similarity'] = max(0, 1 - f['rs_interval_cv'])          # 拆单相似度
+f['rs_burst_ratio'] = (intervals < 1).sum() / len(intervals)        # 爆发率(间隔<1秒)
+f['rs_hft_ratio'] = (intervals < 0.1).sum() / len(intervals)        # 高频交易(间隔<0.1秒)
+# 间隔偏度/峰度（量化特征：规律性交易有不同分布形状）
+z = (intervals - intervals.mean()) / (intervals.std() + 1e-8)
+f['rs_interval_skew'] = (z ** 3).mean()
+f['rs_interval_kurt'] = (z ** 4).mean() - 3
+CB 撤单行为（7维）——基于委托类型：
+cancel_mask = df_ord['order_type'] == 'U'      # 撤单
+trade_ord_mask = df_ord['order_type'] == '1'   # 成交
+add_mask = df_ord['order_type'] == '0'         # 新增
+f['cb_cancel_ratio'] = n_cancel / n_ord         # 撤单率
+f['cb_trade_ord_ratio'] = n_trade_ord / n_ord   # 成交委托比
+f['cb_cancel_amount_ratio'] = cancel_vol / ord_vol  # 撤单金额占比
+f['cb_cancel_trade_ratio'] = n_cancel / (n_trade_ord + 1)
+f['cb_buy_cancel_ratio'] = cancel_buy / n_cancel   # 买方撤单占比
+f['cb_sell_cancel_ratio'] = cancel_sell / n_cancel # 卖方撤单占比
+AP 主动成交（8维）——基于BS标志：
+buy_mask = df_trd['side'] == 'B'   # 主动买入
+sell_mask = df_trd['side'] == 'S'  # 主动卖出
+f['ap_active_buy_pct'] = ba / at_total    # 主动买入占比
+f['ap_active_sell_pct'] = sa / at_total   # 主动卖出占比
+f['ap_active_net_pct'] = (ba - sa) / ta   # 净成交占比
+f['ap_unilateral_intensity'] = abs(f['ap_active_net_pct'])  # 单边强度
+# 连续买卖笔数（itertools.groupby检测连续同向）
+buy_runs = [len(list(g)) for k, g in itertools.groupby(sides == 'B') if k]
+f['ap_active_buy_run_max'] = max(buy_runs) if buy_runs else 0
+PI 日内时段（10维）——基于seconds计算：
+# 8个半小时时段 + 开盘30分钟 + 尾盘10分钟
+time_bins = [(9.5, 10.0, 'pi_t1'), (10.0, 10.5, 'pi_t2'), ...,
+             (14.83, 15.0, 'pi_close10'), (9.5, 10.0, 'pi_open30')]
+for start_h, end_h, key in time_bins:
+    mask = (df_trd['seconds'] >= start_h * 3600) & (df_trd['seconds'] < end_h * 3600)
+    f[f'{key}_amount_pct'] = df_trd.loc[mask, 'amount'].sum() / ta
+f['pi_time_concentration'] = f['pi_open_30min_amount_pct'] + f['pi_close_10min_amount_pct']
+f['pi_period_dispersion'] = np.std([f[f'pi_t{i}_amount_pct'] for i in range(1, 9)])
+PD 价格发现（v6增强）——从行情快照提取：
+f['pd_open_change_pct'] = (open_p - prev_close) / (prev_close + 1e-8)  # 开盘跳空
+f['pd_day_return'] = (close_p - open_p) / (open_p + 1e-8)              # 日内收益
+f['pd_high_low_pct'] = (high_p - low_p) / (open_p + 1e-8)              # 振幅
+f['pd_limit_up_dist'] = max(0, (limit_up - high_p) / (prev_close + 1e-8))  # 距涨停
+f['pd_vwap_deviation'] = (close_p - vwap) / (vwap + 1e-8)              # VWAP偏离
+f['pd_reversal'] = 1.0 if morning_dir != afternoon_dir else 0.0        # 价格反转
+f['pd_big_order_buy_ratio'] = big_buy / big_total  # 大单买入占比
+f['pd_big_order_direction'] = abs(f['pd_big_order_buy_ratio'] - 0.5) * 2  # 大单方向一致性
+OBP 盘口衍生（12维）——从十档申买/申卖价量提取：
+row0 = hq_valid.iloc[0]
+f['spread'] = ask1_p - bid1_p                                    # 最优价差
+f['book_imbalance'] = (bid1_v - ask1_v) / (bid1_v + ask1_v + 1e-8)  # 盘口失衡度
+f['big_bid_ratio'] = sum(bid_vol_1~3) / bv_sum                  # 前三档买盘占比
+# 全天盘口统计量
+imb = (total_bid_vol - total_ask_vol) / (total_bid_vol + total_ask_vol + 1e-8)
+f['obp_imbalance_mean'] = np.nanmean(imb)
+f['obp_weighted_spread_mean'] = np.nanmean(weighted_ask - weighted_bid)
+盘口动态（9维）——价差与深度的时间序列变化：
+spreads = hq_valid['ask_price_1'].values - hq_valid['bid_price_1'].values
+f['obp_spread_std'] = np.std(spreads_valid)                # 价差波动
+f['obp_rel_spread_mean'] = np.mean(spreads_valid / ref_price)  # 相对价差
+f['obp_depth_change'] = (bid_vols[-1] - bid_vols[0]) / (bid_vols[0] + 1e-8)  # 深度变化率
+f['obp_net_depth_change'] = (Δbid - Δask) / (bid0 + ask0)  # 净买盘变化
+** 资金集中度（8维）**——用于Task2资本类型判别：
+f['fd_herfindahl'] = np.sum(amounts_pct ** 2)         # 赫芬达尔指数(越高越集中→游资)
+f['fd_top5_amount_pct'] = top5_amounts.sum() / total  # Top5%大单占比
+f['fd_order_trade_ratio'] = n_ord / n_trd             # 委托成交比(量化特征)
+f['fd_cancel_burst_ratio'] = (cancel_intervals < 1).sum() / len(...)  # 撤单聚集度
+f['fd_interval_autocorr'] = np.corrcoef(intervals[:-1], intervals[1:])[0,1]  # 间隔自相关
+f['fd_buy_sell_asymmetry'] = abs(n_buy - n_sell) / (n_buy + n_sell)  # 买卖不对称性
+f['fd_streak_max'] = max(streaks)                     # 最大连续同向笔数
+模型训练
+Baseline 的模型训练分为 Task1 多模型融合聚类 与 Task2 两阶段识别 两大模块，全部为无监督学习，无任何标签参与，完全贴合赛事合规要求。
+Task 1 — 4模型融合聚类（KMeans++ / DBSCAN / Agglomerative / GMM 多数投票）
+Step 1：特征归一化采用 RobustScaler + Rank 百分位混合，对异常值鲁棒且消除量纲差异：
+def _normalize_features_robust(df_feat):
+    feat_cols = [c for c in df_feat.columns
+                 if c not in ('stock_code', 'transaction_date', 'pattern_type', 'cluster_id')
+                 and df_feat[c].dtype in ('float64', 'int64', 'float32', 'int32')]
+    feat_mat = np.nan_to_num(df_feat[feat_cols].values.astype(float), nan=0, posinf=0, neginf=0)
+
+    # 第1步：RobustScaler（用中位数和IQR缩放，对异常值鲁棒）
+    scaler = RobustScaler()
+    feat_scaled = scaler.fit_transform(feat_mat)
+
+    # 第2步：Rank百分位特征（量纲无关）
+    n, d = feat_scaled.shape
+    rank_feat = np.zeros((n, d))
+    for j in range(d):
+        col_vals = feat_scaled[:, j]
+        rank_feat[:, j] = np.argsort(np.argsort(col_vals)) / (n - 1)
+
+    # 混合：50% RobustScaled + 50% Rank
+    feat_hybrid = 0.5 * feat_scaled / (np.std(feat_scaled, axis=0) + 1e-8) + 0.5 * rank_feat
+    return feat_hybrid, feat_cols
+Step 2：四个聚类模型并行运行，再通过 多数投票融合 得到最终聚类标签：
+def task1_multi_model_fusion(df_feat, percentiles):
+    n_patterns = len(PATTERN_NAMES)  # 10种交易模式
+    feat_hybrid, _ = _normalize_features_robust(df_feat)
+
+    cluster_labels = np.zeros((n, 4), dtype=int)
+    # Model 1: KMeans++（经典球形聚类）
+    km = KMeans(n_clusters=n_patterns, init='k-means++', n_init=10,
+                random_state=RANDOM_SEED, max_iter=300)
+    cluster_labels[:, 0] = km.fit_predict(feat_hybrid)
+
+    # Model 2: DBSCAN（密度聚类，识别任意形状和异常点）
+    # 自适应 eps：用 k-distance 图 90 分位数估计
+    nn = NearestNeighbors(n_neighbors=min(20, n-1)).fit(feat_hybrid)
+    distances = nn.kneighbors(feat_hybrid)[0][:, -1]
+    eps = max(np.percentile(distances, 90), 0.1)
+    db = DBSCAN(eps=eps, min_samples=max(5, n // 200))
+    cluster_labels[:, 1] = db.fit_predict(feat_hybrid)
+
+    # Model 3: Agglomerative（层次聚类，捕捉层级结构）
+    ag = AgglomerativeClustering(n_clusters=n_patterns)
+    cluster_labels[:, 2] = ag.fit_predict(feat_hybrid)
+
+    # Model 4: GMM（高斯混合，软分配）
+    gmm = GaussianMixture(n_components=n_patterns, covariance_type='full',
+                          random_state=RANDOM_SEED, max_iter=200)
+    cluster_labels[:, 3] = gmm.fit_predict(feat_hybrid)
+
+    # 多数投票融合（DBSCAN 噪声点 -1 过滤掉，平票时回退 KMeans）
+    final_labels = np.zeros(n, dtype=int)
+    for i in range(n):
+        votes = cluster_labels[i, :]
+        valid_votes = votes[votes >= 0]
+        if len(valid_votes) == 0:
+            final_labels[i] = votes[0]  # KMeans 兜底
+        else:
+            counter = Counter(valid_votes)
+            most_common = counter.most_common()
+            if len(most_common) == 1 or most_common[0][1] > most_common[1][1]:
+                final_labels[i] = most_common[0][0]
+            else:
+                final_labels[i] = votes[0]  # 平票用 KMeans
+Step 3：通过 PATTERN_RULES（10种模式 × 6特征 × 方向） 贪心匹配将聚类标签映射到语义模式：
+# PATTERN_RULES：每种模式定义6个核心特征及其方向（+1正向、-1反向、0对称）
+PATTERN_RULES = [
+    ('大单吸筹', '资金大笔挂单买入，短时间内集中扫货',
+     [('oss_mega_amount_pct', +1), ('ap_active_buy_pct', +1),
+      ('pd_big_order_buy_ratio', +1), ('book_imbalance', +1),
+      ('pi_time_concentration', +1), ('pd_reversal', -1)]),
+    ('尾盘突袭', '尾盘最后15分钟集中放量拉升或砸盘，制造典型技术形态',
+     [('pi_close10_amount_pct_v2', +1), ('pd_close10_abs_return', +1),
+      ('ap_unilateral_intensity', +1), ('pi_period_dispersion', -1),
+      ('oss_large_amount_pct', +1), ('pd_big_order_direction', +1)]),
+    # ... 共10种模式：大单吸筹/压单吸货/尾盘突袭/集合竞价异动/对倒拉升/
+    #                盘中诱多/分时脉冲/涨停板打开/连续小单推升/日内套利
+]
+
+# 模式打分：对每个特征按百分位计算方向性得分
+def _score_pattern_vectorized(df_feat, pname, percentiles):
+    conditions = PATTERN_CONDITIONS[pname]
+    scores = np.zeros(n)
+    for col, direction in conditions:
+        pcts = np.array([np.mean(all_vals <= v) for v in vals])  # 跨样本百分位
+        pcts = np.clip(pcts, 0.01, 0.99)
+        if direction == +1:   scores += pcts                  # 正向：值越大得分越高
+        elif direction == -1: scores += (1 - pcts)            # 反向：值越小得分越高
+        else:                 scores += (1 - np.abs(pcts - 0.5) * 2)  # 对称
+    return scores / weight_sum
+
+# 贪心分配：按聚类大小排序，每个聚类选得分最高且未被占用的模式
+def _map_clusters_to_patterns(df_feat, cluster_labels, percentiles):
+    sorted_labels = sorted(unique_labels, key=lambda l: (...).sum(), reverse=True)
+    for label in sorted_labels:
+        scores = [_score_pattern_vectorized(cluster_feat, pn, percentiles).mean()
+                  for pn in PATTERN_NAMES]
+        sorted_patterns = np.argsort(-scores)
+        for pat_idx in sorted_patterns:
+            if pat_idx not in assigned:
+                assigned.add(pat_idx)
+                label_to_pattern[label] = PATTERN_NAMES[pat_idx]
+                break
+Step 4：多样性校准（10轮迭代退火），将每种模式占比约束在 6%-18%：
+target_min, target_max = 0.06, 0.18
+for iteration in range(10):
+    vc = df_feat['pattern_type'].value_counts()
+    oversized = [p for p, cnt in vc.items() if cnt > n * target_max]
+    undersized = [p for p in PATTERN_NAMES if vc.get(p, 0) < n * target_min]
+
+    # 超比例模式：把"次优模式得分最高"的样本迁移出去
+    for dom_pattern in oversized:
+        excess = int(cnt - n * target_max)
+        dom_scores = all_pattern_scores[dom_mask]
+        alt_scores = dom_scores.copy(); alt_scores[:, dom_pat_idx] = -np.inf
+        best_alt_idx = np.argmax(alt_scores, axis=1)
+        for j in np.argsort(-best_alt_score)[:excess]:
+            df_feat.loc[orig_idx, 'pattern_type'] = PATTERN_NAMES[best_alt_idx[j]]
+
+    # 欠比例模式：从其他模式里"目标模式得分提升最大"的样本迁入
+    for target_pattern in undersized:
+        needed = max(int(n * target_min) - vc.get(target_pattern, 0), 0)
+        gains = target_s - current_s
+        for j in np.argsort(-gains)[:needed]:
+            df_feat.loc[orig_idx, 'pattern_type'] = target_pattern
+Task 2 — 两阶段识别（行为组聚类 → 组内Z-score归一化 → 三因子打分）
+Stage 1：用 KMeans 在 10 个与价格量纲无关的行为特征上将全市场聚为 3-6 个行为组（解决大盘股/小盘股不可比问题）：
+def task2_two_stage_recognition(df_feat, percentiles=None):
+    cluster_feature_names = [
+        'oss_small_amount_pct', 'pd_big_order_amount_pct', 'rs_split_similarity',
+        'rs_hft_ratio', 'cb_cancel_ratio', 'ap_unilateral_intensity',
+        'trd_avg_trade_amount', 'fd_herfindahl', 'fd_order_trade_ratio',
+        'fd_buy_sell_asymmetry',
+    ]
+    clust_mat = df[avail_features].values
+    if 'trd_avg_trade_amount' in avail_features:
+        idx = avail_features.index('trd_avg_trade_amount')
+        clust_mat[:, idx] = np.log1p(np.maximum(clust_mat[:, idx], 0))  # log变换消除量级
+
+    clust_mat = RobustScaler().fit_transform(clust_mat)
+    n_clusters = min(6, max(3, n // 100))   # 自适应组数
+    kmeans = KMeans(n_clusters=n_clusters, init='k-means++', n_init=10,
+                    random_state=RANDOM_SEED)
+    behavior_groups = kmeans.fit_predict(clust_mat)
+Stage 2：全局 min-max 归一化 → 组内 Z-score 归一化，再计算游资/量化/散户三因子加权得分（15/15/13维特征），取最高分确定资金类型：
+# 全局 min-max 归一化（保留 0-1 量纲）
+for c in score_feat_names:
+    df[c] = (v - mn) / (mx - mn + 1e-8) if mx > mn else 0.5
+
+# 组内 Z-score 归一化（组内相对比较）
+for g in range(n_clusters):
+    gmask = behavior_groups == g
+    if gmask.sum() < 3: continue
+    for c in score_feat_names:
+        gvals = df.loc[gmask, c].values
+        gmean, gstd = np.mean(gvals), np.std(gvals)
+        df.loc[gmask, c] = (gvals - gmean) / (gstd + 1e-8) if gstd > 1e-8 else 0
+
+# 游资得分（15维，权重0.12~0.03，侧重大额/单边/集中度/冲击）
+df['score_yz'] = (
+    df.get('oss_mega_amount_pct', 0) * 0.12 +
+    df.get('pd_big_order_amount_pct', 0) * 0.10 +
+    df.get('ap_unilateral_intensity', 0) * 0.10 +
+    df.get('fd_herfindahl', 0) * 0.09 +
+    df.get('fd_top5_amount_pct', 0) * 0.08 +
+    df.get('pi_time_concentration', 0) * 0.07 + ...  # 共15项
+)
+
+# 量化得分（15维，权重0.12~0.02，侧重规律性/高频/撤单/小单）
+df['score_qt'] = (
+    df.get('rs_split_similarity', 0) * 0.12 +
+    df.get('cb_cancel_ratio', 0) * 0.10 +
+    df.get('rs_hft_ratio', 0) * 0.09 +
+    df.get('fd_order_trade_ratio', 0) * 0.08 +
+    df.get('oss_small_amount_pct', 0) * 0.08 + ...   # 共15项
+)
+
+# 散户得分（13维，权重0.15~0.04，侧重小单/不规则/宽价差/低集中度）
+df['score_sh'] = (
+    df.get('oss_small_amount_pct', 0) * 0.15 +
+    df.get('rs_interval_cv', 0) * 0.11 +
+    np.abs(df.get('spread', 0)) * 0.09 + ...          # 共13项
+)
+
+# 三分类：得分高者胜出
+def get_capital_type(row):
+    scores = {'游资': row['score_yz'], '量化': row['score_qt'], '散户': row['score_sh']}
+    return max(scores, key=scores.get)
+df['capital_type'] = df.apply(get_capital_type, axis=1)
+Stage 3：资金类型多样性校准（5轮迭代），将游资/量化/散户占比约束在 22%-45%：
+SCORE_COL_MAP = {'游资': 'score_yz', '量化': 'score_qt', '散户': 'score_sh'}
+target_min, target_max = 0.22, 0.45
+for _ in range(5):
+    vc = df['capital_type'].value_counts()
+    oversized = [ct for ct, cnt in vc.items() if cnt > n * target_max]
+    undersized = [ct for ct in ['游资', '量化', '散户']
+                  if vc.get(ct, 0) < n * target_min]
+    # 超比例类型：找"次优类型得分差距最小"的样本迁移出去
+    for ct in oversized:
+        df_dom['min_gap'] = df_dom[[f'gap_{t}' for t in non_dom]].max(axis=1)
+        for idx in df_dom.sort_values('min_gap', ascending=False).index[:n_reassign]:
+            df.loc[idx, 'capital_type'] = max(rem_scores, key=rem_scores.get)
+    # 欠比例类型：从其他类型里"目标类型得分提升最大"的样本迁入
+    for ct in undersized:
+        candidates['gap_to_ct'] = candidates[ct_col] - candidates.apply(...).max()
+        for idx in candidates.sort_values('gap_to_ct', ascending=False).index[:n_assign]:
+            df.loc[idx, 'capital_type'] = ct
+结果预测
+意图判定采用 buy_signal / sell_signal 多维度加权打分，覆盖 7 个维度：净买卖比、买卖成交额比、VWAP 偏离、大单买入占比、盘口失衡快照、盘口失衡均值、日内收益。每个维度按"信号是否触发"输出 0/1 二值，再按权重累加得到 0-3.8 区间的综合得分。
+# 7维买入信号（权重1.0/0.7/0.6/0.5/0.4/0.3/0.3，满3.8）
+df['buy_signal'] = (
+    (df['_net_ratio'] > 0.01).astype(float) * 1.0 +              # 净买卖比 > 1%
+    (raw_buy.values > raw_sell.values * 1.02).astype(float) * 0.7 +  # 买成交额 > 卖×1.02
+    (df['_vwap_dev'] > 0.002).astype(float) * 0.6 +              # VWAP偏离 > 0.2%
+    (df['_big_buy'] > 0.55).astype(float) * 0.5 +                # 大单买入占比 > 55%
+    (df['_imb_snap'] > 0.003).astype(float) * 0.4 +              # 盘口失衡快照 > 0.3%
+    (df['_imb_mean'] > 0.002).astype(float) * 0.3 +              # 盘口失衡均值 > 0.2%
+    (df['_day_ret'] > 0.005).astype(float) * 0.3                 # 日内收益 > 0.5%
+)
+# 7维卖出信号（条件对称反向）
+df['sell_signal'] = (
+    (df['_net_ratio'] < -0.01).astype(float) * 1.0 +
+    (raw_sell.values > raw_buy.values * 1.02).astype(float) * 0.7 +
+    (df['_vwap_dev'] < -0.002).astype(float) * 0.6 +
+    (df['_big_buy'] < 0.45).astype(float) * 0.5 +
+    (df['_imb_snap'] < -0.003).astype(float) * 0.4 +
+    (df['_imb_mean'] < -0.002).astype(float) * 0.3 +
+    (df['_day_ret'] < -0.005).astype(float) * 0.3
+)
+
+# 意图判定：综合比较 buy_signal (bs) 与 sell_signal (ss)
+def get_intention(row):
+    bs, ss = row['buy_signal'], row['sell_signal']
+    if bs >= 0.9 and ss < 0.6:           return '买入'    # 强买信号
+    if ss >= 0.9 and bs < 0.6:           return '卖出'    # 强卖信号
+    if bs >= 0.7 and ss >= 0.7:          return '买入' if bs >= ss else '卖出'  # 双强对冲
+    if bs < 0.5 and ss < 0.5:            return 'T0交易'  # 信号均弱 → T0套利
+    if bs > ss * 1.5:                    return '买入'    # 买方明显占优
+    if ss > bs * 1.5:                    return '卖出'    # 卖方明显占优
+    return 'T0交易'                                         # 默认 T0
+df['capital_intention'] = df.apply(get_intention, axis=1)
+意图识别完成后，再做 意图多样性校准（5轮迭代），将买入/卖出占比约束在 18%-40%，T0交易占比至少 12%：
+max_intent_pct, min_intent_pct, min_t0_pct = 0.40, 0.18, 0.12
+for _ in range(5):
+    vi = df['capital_intention'].value_counts()
+    # 超比例意图：把"反向信号差距最小"的样本迁到次优意图（T0优先）
+    oversized = [it for it, cnt in vi.items() if cnt > n_total * max_intent_pct]
+    for over_intent in oversized:
+        excess = int(vi[over_intent] - n_total * max_intent_pct)
+        candidates = df.loc[over_mask].nsmallest(excess, '_gap_opposite')
+        for idx in candidates.index:
+            if abs(bs - ss) < 0.3:   df.loc[idx, 'capital_intention'] = 'T0交易'
+            else:                    df.loc[idx, 'capital_intention'] = opposite_intent
+
+    # 欠比例意图：从其他意图里"对应信号最强"的样本迁入
+    for target_intent, signal_col in [('买入', 'buy_signal'), ('卖出', 'sell_signal')]:
+        needed = max(int(n_total * min_intent_pct) - vi.get(target_intent, 0), 0)
+        candidates = df[mask].nlargest(min(needed * 2, mask.sum()), signal_col)
+        for idx in candidates.index[:min(needed, len(candidates))]:
+            df.loc[idx, 'capital_intention'] = target_intent
+
+    # T0占比兜底：从"买卖信号差距最小"的样本迁入T0
+    if vi.get('T0交易', 0) < n_total * min_t0_pct:
+        df['_signal_gap'] = np.abs(df['buy_signal'] - df['sell_signal'])
+        candidates = df[mask].nsmallest(min(needed_t0 * 2, mask.sum()), '_signal_gap')
+        for idx in candidates.index[:min(needed_t0, len(candidates))]:
+            df.loc[idx, 'capital_intention'] = 'T0交易'
+后处理校准：_post_filter_calibrate 在目标股票子集（剔除建模辅助但非目标输出的股票）上做第二轮轻量校准，确保最终输出的 pattern_type 与 capital_type 分布满足 5%-20%（模式）和合理三类资金分布，并同步更新 pattern_explanation。
+def _post_filter_calibrate(df_pat, df_res, percentiles, df_feat_filtered):
+    # 在目标股票子集上重算 pattern 得分，做 3 轮迭代平衡
+    target_max_p, target_min_p = 0.20, 0.05
+    for _ in range(3):
+        # 超比例模式：迁出"次优得分差距最小"的样本
+        # 欠比例模式：迁入"目标模式得分提升最大"的样本
+        ...
+    df_pat['pattern_type'] = current_pats
+    df_pat['pattern_explanation'] = df_pat['pattern_type'].map(PATTERN_DESC)  # 同步更新解释
+    # 同样在目标股票子集上对 capital_type 做轻量平衡
+结果输出：save_results 函数最终做格式合法性校验后，以 UTF-8-sig 编码输出两个CSV：
+def save_results(df_pat, df_res, output_dir):
+    # 字段顺序校验（不可修改）
+    assert list(df_pat.columns) == ['stock_code', 'transaction_date',
+                                    'pattern_type', 'pattern_explanation']
+    assert list(df_res.columns) == ['stock_code', 'transaction_date',
+                                    'capital_type', 'capital_intention']
+    # 合法值校验
+    assert df_res['capital_type'].isin(['游资', '量化', '散户']).all()
+    assert df_res['capital_intention'].isin(['买入', '卖出', 'T0交易']).all()
+    # UTF-8-sig 编码输出
+    df_pat.to_csv(os.path.join(output_dir, 'pattern_reco.csv'),
+                  index=False, encoding='utf-8-sig')
+    df_res.to_csv(os.path.join(output_dir, 'predict_result.csv'),
+                  index=False, encoding='utf-8-sig')
+设计说明：意图判定从旧版的"双源盘口失衡+主动占比"2 维阈值规则，升级为 7 维多信号加权打分，覆盖了主动成交方向、价格冲击、盘口失衡、日内收益四个维度，能够更稳定地反映全天多空力量对比。T0交易识别专为量化高频套利场景设计，与游资单边趋势性交易形成有效区分。
+离线评估
+Baseline 在 save_results 输出阶段做严格的格式合法性校验，并在主流程打印 Task1 模式分布与 Task2 资金/意图分布，便于本地观察分布是否合理。
+# Task 1: 模式分布统计（校准后应满足 6%-18%）
+dist = df_pat['pattern_type'].value_counts()
+print(f"模式分布({len(dist)}种):")
+for k, v in dist.items():
+    print(f"  {k}: {v} ({v/len(df_pat)*100:.1f}%)")
+
+# Task 2: 资金类型分布（校准后应满足 22%-45%）
+print(f"资金类型分布:")
+for k, v in df_r['capital_type'].value_counts().items():
+    print(f"  {k}: {v} ({v/len(df_r)*100:.1f}%)")
+
+# Task 2: 交易意图分布（买入/卖出 18%-40%，T0≥12%）
+print(f"交易意图分布:")
+for k, v in df_r['capital_intention'].value_counts().items():
+    print(f"  {k}: {v} ({v/len(df_r)*100:.1f}%)")
+
+# 格式合法性校验（严格匹配赛事指定分类，不可输出其他值）
+assert df_res['capital_type'].isin(['游资', '量化', '散户']).all()
+assert df_res['capital_intention'].isin(['买入', '卖出', 'T0交易']).all()
+评估指标说明：
+● Task1 聚类效果：线上评分基于轮廓系数、CH指数、Wasserstein距离、DTW时序距离四大指标，本地可通过 sklearn.metrics.silhouette_score / calinski_harabasz_score 计算前两项做参考，但因 Baseline 采用 4 模型融合而非单一 KMeans，轮廓系数需基于融合后的 final_labels 计算。
+● Task2 资金识别：线上评分基于平台 T+5 日实盘回溯的真实资金标签计算加权 F1-Score，本地无真值，仅做分布合理性观察（游资/量化/散户占比是否在 22%-45% 区间）。
+● 多样性校准效果：观察模式分布是否落在 6%-18%，资金类型是否落在 22%-45%，意图中 T0 占比是否≥12%。校准未达标时需调整 target_min/target_max 参数或增加迭代轮数。
+四、Baseline 运行说明
+环境要求
+Python >= 3.8
+pandas, numpy, scikit-learn, openpyxl
+安装依赖
+python3 -m pip install pandas numpy scikit-learn openpyxl
+数据目录结构
+工作目录/
+├── main.py                    ← Baseline入口脚本
+├── 股票样本.xlsx                ← 100只目标股票列表
+├── 20260618/                    ← 日期目录
+│   ├── 600000/                  ← 股票代码目录
+│   │   ├── 行情.csv             ← 3秒快照(GBK, 中文列名)
+│   │   ├── 逐笔成交.csv          ← 逐笔成交(GBK, 中文列名)
+│   │   └── 逐笔委托.csv          ← 逐笔委托(GBK, 中文列名)
+│   └── ...
+└── output/                      ← 结果输出目录
+运行方式
+# 默认运行
+python main.py
+
+# 仅处理前N只股票（调试用）
+python main.py -n 20
+预期输出
+【1/5】三源CSV数据加载开始
+加载完成 | 日期: 20260618 | 股票数: 100
+【2/5】全量特征提取开始
+特征提取完成 | 总特征数: 100 维 | 总样本数: 100
+【3/5】Task1 4模型融合聚类开始
+>>> KMeans / DBSCAN / Agglomerative / GMM 多数投票融合 (k=10)
+>>> PATTERN_RULES 贪心匹配 10 种交易模式
+>>> 多样性校准: 模式占比约束在 6%-18%
+Task1 聚类完成 | 模式数: 10
+交易模式分布:
+大单吸筹              12 (12.0%)
+压单吸货              10 (10.0%)
+尾盘突袭               8  (8.0%)
+集合竞价异动           7  (7.0%)
+对倒拉升              11 (11.0%)
+盘中诱多               9  (9.0%)
+分时脉冲              10 (10.0%)
+涨停板打开             8  (8.0%)
+连续小单推升          13 (13.0%)
+日内套利             12 (12.0%)
+【4/5】Task2 两阶段资金识别开始
+>>> Stage1: KMeans 行为组聚类 (3-6组)
+>>> Stage2: 组内Z-score → 游资/量化/散户三因子打分 (15/15/13维)
+>>> buy_signal/sell_signal 7维意图判定
+>>> 多样性校准: 资金类型约束在 22%-45%, 意图T0≥12%
+Task2 识别完成
+资金类型分布:
+游资    38 (38.0%)
+量化    35 (35.0%)
+散户    27 (27.0%)
+交易意图分布:
+买入    32 (32.0%)
+卖出    28 (28.0%)
+T0交易  40 (40.0%)
+【5/5】结果保存与离线评估开始
+>>> 格式合法性校验: capital_type ∈ {游资,量化,散户}, intention ∈ {买入,卖出,T0交易}
+所有流程完成！
+说明：A/B 榜有 100 只股票 × 多个交易日，4 模型融合聚类输出 10 种模式，每种模式占比被校准至 6%-18% 区间；Task2 两阶段识别输出游资/量化/散户三类资金（各 22%-45%），意图输出买入/卖出/T0交易三类（T0≥12%）。
+输出文件
+pattern_reco.csv    → stock_code, transaction_date, pattern_type, pattern_explanation
+predict_result.csv  → stock_code, transaction_date, capital_type, capital_intention
+五、baseline方案思路
+本 Baseline的设计思路是 "三源数据驱动 + 多模型融合聚类 + 两阶段资金识别 + 多样性校准"：
+1. 三源CSV独立读取：load_snapshot/load_trades/load_orders 分别读取 行情.csv/逐笔成交.csv/逐笔委托.csv，通过 HQ_COL_MAP 将中文列名统一映射为英文字段，避免混合读取造成的字段错位。
+2. 时间标准化：时间 字段为 HHMMSSmmm 格式整数（如 93000000=9:30:00.000），通过 _parse_time_to_seconds() 转换为日内秒数后做时段判定（开盘30分钟/尾盘10分钟/8个半小时时段），不能用 UTC 时间戳。
+3. 特征工程10大类约100维：基于三源数据提取 OSS大单分级/TRD交易结构/RS订单时序/CB撤单行为/AP主动成交/PI日内时段/PD价格发现/OBP盘口衍生 共8类官方特征，并补充 盘口动态（价差波动/相对价差/买卖深度比变化/净买盘变化）与 资金集中度（赫芬达尔指数/Top5%大单占比/成交额熵/委托成交比/撤单聚集度/间隔自相关/买卖不对称性/连续同向笔数）2类衍生特征。
+4. 逐笔成交直接分级：逐笔成交.csv 的 成交数量 是逐笔值，特征工程直接基于 amount = 成交价格 × 成交数量 按超大单(≥50万)/大单(≥10万)/中单(≥4万)/小单(<4万) 分级，无需对 行情.csv 的累计值做 diff。
+5. 4模型融合聚类：Task1 采用 KMeans++/DBSCAN/Agglomerative/GMM 四模型多数投票融合（k=10），比单一 KMeans 更鲁棒，能综合密度/层次/概率/质心四类聚类思想的优势。
+6. PATTERN_RULES贪心匹配：定义 10 种交易模式 × 6 个特征 × 方向（+1/-1/0）的规则矩阵，对每个聚类簇的特征均值做贪心匹配，命中数最多的模式即为该簇的语义标签，实现数学聚类到业务模式的可解释映射。
+7. 两阶段资金识别：Stage1 用 KMeans 在10个行为特征上将全市场聚为3-6个行为组；Stage2 组内 Z-score 归一化后计算游资(15维)/量化(15维)/散户(13维) 三因子加权得分，取最高分确定资金类型，比全局打分更能消除行业/市值差异。
+8. 多维度意图打分：buy_signal/sell_signal 各7维信号（净买卖比/VWAP偏离/大单买入比/盘口失衡/日内收益/尾盘动量/开盘强度）加权打分（权重1.0/0.7/0.6/0.5/0.4/0.3/0.3），两信号均弱则判定为 T0交易，专为量化高频套利场景设计。
+9. 多样性校准：Task1 模式分布约束在 6%-18%，Task2 资金类型约束在 22%-45%，意图中买入/卖出约束在 18%-40% 且 T0≥12%，避免单一类别主导输出，提升与真实市场分布的匹配度。
+10. 量纲鲁棒处理：Task1 采用 50% RobustScaler + 50% Rank 百分位混合归一化（_normalize_features_robust），Task2 采用组内 Z-score 归一化 + min-max 归一化，分别应对不同聚类算法对量纲的敏感性。
+11. 边界处理鲁棒：DBSCAN 噪声点回退至 KMeans 标签、Task2 少样本时调用 _task2_rule_only_fallback 纯规则兜底、np.nan_to_num 处理 NaN/Inf、assert 校验输出合法性，确保全流程稳定运行。
+六、baseline核心逻辑
+1. 数据安全逻辑：所有特征、规则、模型均基于三源 Level2 当日盘中可获取数据，全局固定 RANDOM_SEED=42，无未来函数、无跨日数据、无硬编码标签，完全符合赛事合规要求；
+2. Task1核心逻辑：4模型融合聚类（KMeans/DBSCAN/Agglomerative/GMM 多数投票，k=10）→ PATTERN_RULES 贪心匹配 10 种交易模式（大单吸筹/压单吸货/尾盘突袭/集合竞价异动/对倒拉升/盘中诱多/分时脉冲/涨停板打开/连续小单推升/日内套利）→ 多样性校准将每种模式占比约束在 6%-18%，确保聚类结果的区分度与业务可解释性；
+3. Task2核心逻辑：两阶段识别——Stage1 KMeans 行为组聚类(3-6组) → Stage2 组内 Z-score 归一化后游资(15维)/量化(15维)/散户(13维) 三因子加权打分，游资侧重大额成交/单边买入/盘口买盘失衡，量化侧重小单高频/拆单均匀/窄价差/多空均衡/撤单密集，散户侧重小单分散/无方向性/撤单率低；
+4. 意图识别核心逻辑：buy_signal/sell_signal 各7维信号加权打分（权重1.0/0.7/0.6/0.5/0.4/0.3/0.3），覆盖主动成交方向/价格冲击/盘口失衡/日内收益/尾盘动量/开盘强度六维度，两信号均弱则判定为 T0交易，与游资单边趋势性交易形成有效区分；
+5. 双任务联动逻辑：Task1 与 Task2 共享 df_feat 特征矩阵，Task1 的 PATTERN_RULES 与 Task2 的资金/意图判定独立运行，但最终在 _post_filter_calibrate 中对目标股票子集统一做后处理校准，确保整体分布合理性；
+6. 可解释性逻辑：10 种交易模式均有明确金融含义，游资/量化/散户三因子均有对应特征组支撑，buy/sell_signal 7 维信号均可追溯，无黑箱模型，符合金融场景的可解释性要求，提升方案的评审得分。

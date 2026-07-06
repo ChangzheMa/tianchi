@@ -1,0 +1,362 @@
+一、思考题
+（一）如何优化 Baseline 方案？
+特征工程优化（最高优先级，投入产出比最高）
+● 盘口微观结构特征：
+  ○ 订单流不平衡（OFI）：计算连续快照间买卖挂单的变化量，是学术界公认的强特征。公式：OFI = Δbid_volume - Δask_volume。
+  ○ 深度加权价格：根据盘口深度计算加权平均买卖价格，比简单的最优价差更精确。
+  ○ 价差动态：买卖价差的均值、标准差、变化率，反映流动性变化。
+  ○ 利用 bidaskrate/bidaskdifference：当前训练数据中这两个字段为 0，但 A/B 榜可能有值，届时可提取为特征。
+● 时间序列特征：
+  ○ 滑动窗口统计：过去 N 个快照的均值、标准差、趋势斜率。
+  ○ 自相关特征：价格/成交量的自相关系数。
+● 量价关系特征：
+  ○ 量价背离：价格上涨但成交量下降，或反之。
+  ○ VWAP 偏离度：当前价格与成交量加权平均价的偏离。
+● 撤单行为特征（当前因快照数据缺失而置 0）：
+  ○ 有逐笔撤单数据时，补充撤单率、快速撤单占比、撤单间隔变异系数等。
+模型优化
+● Task 1 聚类：
+  ○ 尝试 DBSCAN、HDBSCAN、GMM 等密度/概率聚类方法。
+  ○ 使用 DTW 距离或 Wasserstein 距离替代欧氏距离，更符合赛题评估标准。
+  ○ 对时间序列构建 TimeSeriesKMeans（基于 DTW）。
+● Task 2 分类：
+  ○ 引入 XGBoost、LightGBM、CatBoost 等梯度提升树模型，替代纯规则打分。
+  ○ 基于聚类标签构建伪标签，训练有监督分类器。
+  ○ 多任务学习：同时预测参与者类型和意图，共享底层特征表示。
+伪标签/规则质量提升
+● 当前规则基于金融领域先验知识，可进一步细化和量化阈值。
+● 利用 A 榜反馈的 F1 分数反向优化规则阈值。
+● 半监督学习：少量标注 + 大量未标注，通过自训练提升标签质量。
+引入外部数据
+● 基本面数据：市值、行业、PE/PB 等，不同行业的参与者结构可能不同。
+● 多日历史数据：利用多日 Level-2 数据构建更丰富的训练集。
+● 新闻/舆情数据：赛题允许使用盘后非实时信息进行事后验证与修正。
+多股票适配
+● 当前训练数据仅 1 只股票，A/B 榜有 100 只股票。需考虑：
+  ○ 不同市值、不同行业的股票特征分布差异。
+  ○ 对特征做市值/行业中性化处理。
+  ○ 聚类时考虑跨股票的模式一致性。
+（二）详细的提分教程
+以下是具体的、可操作的提分路径，按照难度和预期收益排序：
+
+1、提分路径一：盘口微观结构特征
+核心思路：当前 Baseline 只用了首条快照的盘口特征（spread/book_imbalance）和全天统计量。盘口微观结构中的"订单流不平衡（OFI）"是学术界公认的强特征。
+实现方法：
+# 在 extract_all_feature 中，对每条快照计算 OFI
+# OFI = (bid_volume_t - bid_volume_t-1) - (ask_volume_t - ask_volume_t-1)
+# 正值 → 买方挂单在增加，买盘压力大；负值 → 卖方挂单在增加，卖盘压力大
+
+group['ofi'] = (group['totalbidvolume'].diff() - group['totalaskvolume'].diff())
+feature['ofi_mean'] = group['ofi'].mean()
+feature['ofi_std'] = group['ofi'].std()
+feature['ofi_positive_ratio'] = (group['ofi'] > 0).sum() / len(group)
+为什么有效：OFI 反映的是"新挂单"的方向——游资拉升时，会不断在买盘挂大单吸引跟风盘，OFI 会持续为正；量化 T0 套利时，买卖挂单交替变化，OFI 在零附近波动。
+
+2、提分路径二：撤单行为特征补充
+核心思路：当前 Baseline 中 CB 特征全为 0，因为快照数据没有撤单明细。但如果你能获取到逐笔撤单数据（赛题数据可能包含），撤单行为是区分游资和量化最有效的特征之一。
+实现方法：
+# 假设有 cancels 数据表，包含 cancel_time, cancel_volume, cancel_direction
+# 快速撤单占比：挂单后 < 1 秒内撤单的占比
+fast_cancel = cancels[cancels['cancel_interval_ms'] < 1000]
+feature['cb_fast_cancel_ratio'] = len(fast_cancel) / len(cancels)
+
+# 买卖撤单分化：买方撤单 / 卖方撤单
+feature['cb_buy_cancel_ratio'] = len(cancels[cancels['direction'] == 'buy']) / len(cancels)
+feature['cb_sell_cancel_ratio'] = len(cancels[cancels['direction'] == 'sell']) / len(cancels)
+
+# 撤单金额占比
+feature['cb_cancel_amount_ratio'] = cancels['cancel_amount'].sum() / total_tick_amount
+为什么有效：量化机构频繁挂单撤单测试市场深度，快速撤单率远高于游资；游资撤单较少，以成交为目的。
+
+3、提分路径三：使用 XGBoost/LightGBM 替代规则打分
+核心思路：当前 Task 2 使用纯规则打分，主观性强。利用聚类标签作为伪标签，训练有监督模型。
+实现方法：
+from xgboost import XGBClassifier
+
+# Step 1: 用当前规则生成伪标签
+df_feature['pseudo_label'] = df_feature.apply(calc_score, axis=1)
+
+# Step 2: 训练 XGBoost 分类器
+X = df_feature[all_feature_cols].values
+y = (df_feature['pseudo_label'] == '游资').astype(int)
+
+model = XGBClassifier(
+    n_estimators=200,
+    max_depth=5,
+    learning_rate=0.05,
+    random_state=42
+)
+model.fit(X, y)
+
+# Step 3: 预测 + 概率校准
+proba = model.predict_proba(X)[:, 1]
+df['capital_type'] = np.where(proba > 0.5, '游资', '量化机构')
+为什么有效：XGBoost 能自动学习特征间的非线性交互关系，比人工规则打分更灵活；同时能输出概率，可用于置信度评估。
+
+4、提分路径四：动态阈值优化
+核心思路：当前聚类模式匹配的阈值是硬编码的（如 oss_mega_amount_pct > 0.12）。可以通过网格搜索或贝叶斯优化找到最优阈值。
+实现方法：
+# 1. 先收集各模式的候选条件
+# 2. 对每个条件，在 [0.05, 0.50] 范围内以 0.01 步长搜索
+# 3. 选择使聚类轮廓系数最大的阈值组合
+
+best_thresholds = {}
+for threshold in np.arange(0.05, 0.50, 0.01):
+    # 更新阈值后重新匹配模式
+    # 计算轮廓系数
+    # 记录最优阈值
+为什么有效：固定阈值在不同股票上表现差异大，数据驱动的阈值搜索能自适应调整。
+
+5、提分路径五：时间序列建模
+核心思路：当前方案将全天数据聚合为单样本，丢失了时序信息。可以尝试 LSTM/Transformer 直接对时序建模。
+实现方法：
+# 将每日的快照序列（N × 特征维度）输入 LSTM/Transformer
+# 输出：参与者类型 + 意图
+# 需要大量训练数据（多只股票多天）
+为什么有效：时序模型能捕捉交易行为的动态演变（如"先吸筹后拉升"的时序模式），这是静态聚合特征无法做到的。
+
+6、提分路径六：大模型解决方案
+核心思路：利用大语言模型（LLM，如 GPT-4、Claude、DeepSeek、Qwen 等）的语义理解、推理和代码生成能力，从多个维度加速和优化解题过程。大模型在金融数据分析中的优势在于：能理解金融领域的业务逻辑、能生成高质量的特征工程代码、能进行多维度推理分析。
+6.1 大模型辅助特征工程
+核心思路：让 LLM 分析数据字段含义，自动推荐和生成特征工程代码。
+实现方法：
+# 步骤 1：将数据 schema 和业务背景作为 Prompt 输入给 LLM
+prompt = """
+你是金融量化分析专家。以下是一个 A 股 Level-2 快照数据的字段列表：
+- symbol: 股票代码
+- price: 最新成交价
+- volume: 当日累计成交量（需 diff 得到逐笔量）
+- amount: 当日累计成交额
+- bids: 十档买盘 JSON（字段：price, volume）
+- asks: 十档卖盘 JSON
+- totalbidvolume: 总委买量
+- totalaskvolume: 总委卖量
+- weightedbidprice: 加权委买价
+- weightedaskprice: 加权委卖价
+- bigordervolume: 大单成交量
+- changepercent: 涨跌幅
+- rangepercent: 振幅
+- ...
+
+任务：请推荐 20 个能有效区分「游资」和「量化机构」的特征，
+并为每个特征提供 Python 实现代码。要求：
+1. 特征要基于 Level-2 数据的微观结构
+2. 说明每个特征为什么能区分游资和量化
+3. 考虑盘口动力学、订单流、撤单行为等维度
+"""
+
+# 步骤 2：调用 LLM API 获取推荐
+# response = llm_client.chat(prompt)
+
+# 步骤 3：将 LLM 生成的代码集成到 extract_all_feature() 中
+LLM 可能推荐的特征示例：
+特征	公式	区分原理
+订单流不平衡 (OFI)	Δtotalbidvolume - Δtotalaskvolume	游资拉升时 OFI 持续为正
+价格冲击弹性	Δprice / Δnet_volume	量化算法降低冲击，弹性小
+盘口深度衰减率	挂单量随档位衰减的速度	游资常在第 1-3 档集中挂单
+撤单-成交比	cancel_amount / trade_amount	量化撤单率远高于游资
+买卖价差波动率	std(spread_t) / mean(spread_t)	游资控盘时价差波动大
+尾盘加速度	收盘前 5 分钟的成交量加速度	游资尾盘突袭特征
+为什么有效：LLM 拥有海量金融文献知识，能基于数据 schema 推理出人类分析师可能忽略的特征组合。相比人工设计特征，覆盖面更广、效率更高。
+6.2 大模型辅助模式解释与报告生成
+核心思路：利用 LLM 的语义生成能力，为聚类结果自动生成金融语义解释，并撰写方案报告。
+实现方法：
+# 步骤 1：将聚类中心特征画像输入 LLM
+prompt = """
+以下是某只股票在某交易日的交易特征：
+- 超大单成交占比: 51%
+- 大单成交占比: 31.7%
+- 主动买入占比: 70.9%
+- 时段集中度: 31.8%
+- 盘口失衡度: 0.0
+- 价格波动率: 1.9%
+- 价格冲击: 13.1
+
+请分析：
+1. 这只股票当天的交易模式是什么？（从以下选项中选择一个最匹配的：
+   游资强势连板拉升、量化高频T0套利、尾盘资金突袭、主力分批吸筹、
+   日内均衡T0套利、对倒洗盘、散户零散交易、机构长线配置）
+2. 请给出 200 字以内的详细解释，说明为什么是这种模式
+3. 判断主导资金是游资还是量化机构，并说明理由
+"""
+
+# 步骤 2：LLM 返回结构化的分析结果
+# response = llm_client.chat(prompt)
+# pattern_type = response['pattern_type']
+# explanation = response['explanation']
+进阶用法——批量生成方案报告：
+# 将整个方案的架构、特征列表、模型设计输入 LLM
+# 让 LLM 自动生成 project_solution_report.docx 的初稿
+report_prompt = f"""
+请基于以下方案信息，撰写一份 AFAC2026 赛题一的方案报告：
+
+方案架构：
+{json.dumps(solution_architecture, ensure_ascii=False)}
+
+特征列表（共 {len(features)} 个）：
+{json.dumps(features, ensure_ascii=False)}
+
+聚类模型：KMeans (n=8)
+分类模型：11维多因子打分
+
+报告要求：
+1. 包含问题定义、建模思路、特征工程、模型设计、实验结果
+2. 专业、严谨，引用金融领域知识
+3. 字数 3000-5000 字
+"""
+为什么有效：方案报告占最终评分的 20%，LLM 的文本生成能力可以大幅提升报告质量和撰写效率，让你把更多时间投入到模型优化上。
+6.3 大模型辅助规则阈值优化
+核心思路：让 LLM 基于金融领域知识，为多条件联合匹配的阈值提供合理建议和敏感性分析。
+实现方法：
+prompt = """
+你是 A 股市场微观结构分析专家。当前方案使用以下阈值来识别交易模式：
+
+"游资强势连板拉升"：
+- oss_mega_amount_pct > 0.12（超大单成交占比）
+- book_imbalance > 0.2（盘口失衡度）
+- ap_active_buy_pct > 0.55（主动买入占比）
+- pi_time_concentration > 0.3（时段集中度）
+
+请分析：
+1. 以上阈值在当前 A 股市场环境下是否合理？
+2. 如果样本包含 100 只不同市值（小盘 50 亿-500 亿、中盘 500 亿-2000 亿）的股票，
+   阈值是否需要按市值分组调整？请给出分组建议。
+3. 对于「量化高频T0套利」模式，当前小单占比阈值设为 0.7，
+   如果量化机构使用冰山订单隐藏大单，这个阈值是否仍然有效？
+   如果不有效，你建议如何调整？
+"""
+
+# LLM 返回分析结果，人工审核后调整阈值
+为什么有效：LLM 能结合市场微观结构理论，对不同市值的股票给出差异化的阈值建议，比简单的网格搜索更有金融逻辑支撑。
+6.4 多智能体协作方案（Agent-based Pipeline）
+核心思路：构建多个专业化 LLM Agent，分别负责特征工程、模型构建、评估诊断，通过协同工作实现端到端的自动化方案。
+架构设计：
+┌─────────────────────────────────────────────────────────────┐
+│                    Orchestrator Agent                        │
+│              (任务分配、结果汇总、流程控制)                      │
+└───────┬──────────────┬──────────────┬──────────────┬────────┘
+        │              │              │              │
+        ▼              ▼              ▼              ▼
+┌───────────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐
+│ Feature       │ │ Model    │ │ Eval     │ │ Report       │
+│ Engineer      │ │ Builder  │ │ Analyst  │ │ Writer       │
+│ Agent         │ │ Agent    │ │ Agent    │ │ Agent        │
+│               │ │          │ │          │ │              │
+│ 职责:         │ │ 职责:    │ │ 职责:    │ │ 职责:        │
+│ · 分析数据    │ │ · 选择   │ │ · 评估   │ │ · 撰写方案   │
+│ · 设计特征    │ │   模型   │ │   指标   │ │   报告       │
+│ · 生成代码    │ │ · 调参   │ │ · 诊断   │ │ · 生成       │
+│ · 验证特征    │ │ · 训练   │ │   问题   │ │   文档       │
+│               │ │          │ │ · 建议   │ │              │
+└───────────────┘ └──────────┘ └──────────┘ └──────────────┘
+实现示例（基于 LangChain/LangGraph）：
+from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+
+# ── 定义各 Agent 的工具 ──
+
+@tool
+def analyze_data_schema(data_path: str) -> str:
+    """分析数据文件的字段结构和统计特征"""
+    import pandas as pd
+    df = pd.read_excel(data_path, engine='openpyxl')
+    return f"数据维度: {df.shape}, 字段: {list(df.columns)}, 缺失率: {df.isnull().mean().to_dict()}"
+
+@tool
+def suggest_features(data_description: str) -> str:
+    """基于数据描述推荐特征工程方案"""
+    # 调用 LLM 推理
+    llm = ChatOpenAI(model="gpt-4")
+    response = llm.invoke(f"基于以下数据描述，推荐 15 个金融特征:\n{data_description}")
+    return response.content
+
+@tool
+def evaluate_clustering(feature_matrix, labels) -> str:
+    """评估聚类效果并给出优化建议"""
+    from sklearn.metrics import silhouette_score, davies_bouldin_score
+    sil = silhouette_score(feature_matrix, labels)
+    db = davies_bouldin_score(feature_matrix, labels)
+    return f"轮廓系数: {sil:.4f}, DB指数: {db:.4f}"
+
+# ── 构建 Agent 协作流程 ──
+# 1. Feature Engineer Agent 分析数据并生成特征
+# 2. Model Builder Agent 选择模型并训练
+# 3. Eval Analyst Agent 评估结果并诊断
+# 4. 迭代优化直到满足指标要求
+# 5. Report Writer Agent 生成最终方案报告
+为什么有效：多智能体协作将复杂任务分解为专业化子任务，每个 Agent 专注于自己的领域，通过协同工作实现比单一 Agent 更好的效果。这种方式特别适合需要多维度专业知识的金融 AI 竞赛。
+6.5 大模型微调方案
+核心思路：如果赛题提供了带标签的训练数据（或通过伪标签自训练积累了足够标注），可以对开源 LLM（如 Qwen、DeepSeek）进行微调，构建专门的金融交易行为分析模型。
+实现方法：
+# 步骤 1：构建指令微调数据集
+# 每个样本包含：交易特征 + 正确的参与者类型和意图
+training_data = [
+    {
+        "instruction": "根据以下 Level-2 交易特征，判断主导参与者类型和交易意图",
+        "input": "超大单占比: 51%, 主动买入: 70.9%, 时段集中度: 31.8%, 盘口失衡: 0.0, 价格波动: 1.9%",
+        "output": "参与者类型: 游资\n交易意图: T0交易\n分析: 超大单占比极高(51%)且主动买入主导(70.9%)，符合游资集中进场特征。但盘口买卖均衡(失衡度≈0)，全天多空力量持平，意图为T0交易。"
+    },
+    # ... 更多样本
+]
+
+# 步骤 2：使用 LoRA 微调（以 Qwen2.5 为例）
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B-Instruct")
+lora_config = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj", "v_proj"])
+model = get_peft_model(model, lora_config)
+
+# 步骤 3：训练后用于推理
+# 输入特征 → 微调模型 → 输出参与者和意图 + 分析理由
+为什么有效：微调后的模型能输出结构化的金融分析结果，包括参与者类型、交易意图和详细分析理由，大幅提升方案报告的质量和可解释性。
+推荐策略：建议从「辅助特征工程」和「模式解释与报告生成」两个难度较低方案入手，快速体验 LLM 的提分效果；在有足够经验和数据积累后，再尝试「多智能体协作」和「LLM 微调」等进阶方案。
+二、附录：补充知识
+附录1：游资 vs 量化机构的交易特征对比
+维度	游资	量化机构
+交易风格	激进、追涨杀跌	稳健、系统化
+订单特征	大单为主、集中出击	小单为主、分散下单
+价格波动	高波动、拉抬/砸盘	低波动、避免影响价格
+交易频率	中低频、择机而动	高频、持续交易
+盘口行为	制造假象、诱多/诱空	盘口均衡、隐藏意图
+撤单行为	撤单较少、成交为主	撤单频繁、试探市场
+时段偏好	集中时段出击	全天均匀分布
+交易结构	单笔交易量大、离散度高	单笔交易量小、均匀分散
+附录2：常见交易模式
+模式	特征	识别要点
+大单吸筹	价格温和上涨，买方力量持续占优，成交量逐步放大	买盘深度大、主动买入占比高
+主力出货	价格滞涨或下跌，卖方力量增强，大单卖出频繁	卖盘压力大、主动卖出占比高
+日内套利	价格在区间内反复波动，高频买卖，成交量均匀	波动率高、买卖交替频繁
+缩量盘整	成交量萎缩，价格波动小，多空观望	成交量低、盘口失衡度小
+尾盘突袭	收盘前集中拉升或砸盘，制造技术形态	尾盘成交量突增、价格快速变动
+附录3： 评估指标说明
+● 轮廓系数（Silhouette Score）：衡量聚类效果，值域 [-1, 1]，越接近 1 越好。综合类内紧密度和类间分离度。
+● CH 指数（Calinski-Harabasz Index）：方差比准则，越高越好。
+● DB 指数（Davies-Bouldin Index）：衡量类间相似度，越低越好（类间差异大、类内聚合好）。
+● 加权 F1 Score：F1 = 2 × Precision × Recall / (Precision + Recall)，加权版考虑类别不平衡。
+● Wasserstein 距离：衡量两个概率分布之间的"推土机距离"，对金融数据分布差异敏感。
+● DTW 距离（Dynamic Time Warping）：衡量时间序列相似度，允许时间轴弹性对齐。
+附录4：特征分类速查表
+缩写	全称	特征数	说明
+OSS	Order Size Split	8	大单分级统计（超大/大/中/小单金额和笔数占比）
+TRD	Trade Structure	6	逐笔交易结构（平均交易量、交易量标准差、大单占比、涨跌幅）
+RS	Regularity & Split	6	订单时序规律（间隔变异系数、拆单相似度、爆发率）
+CB	Cancel Behavior	5	撤单行为（快速撤单占比、买卖撤单分化）— 当前暂为 0
+AP	Aggressive/Passive	7	主动成交（主动买卖占比、连续买卖笔数、单边强度）
+PI	Periodical Intraday	4	日内时段（开盘尾盘成交占比、时段集中度、价格波动）
+PD	Price Discovery	2	价格发现（价格冲击、订单簿不平衡比率）
+OBP	Order Book Profile	14	盘口衍生（价差、失衡度、大单挂单占比、加权价差统计）
+三、参考资料
+1. sklearn 官方文档 - KMeans
+2. sklearn 官方文档 - 聚类评估指标
+3. XGBoost 官方文档
+4. Dynamic Time Warping 算法详解
+5. Python 官方教程 (简体中文版)
+6. 廖雪峰的 Python 教程
+7. 微软 Autogen多智能体框架
+8. pocketflow智能体开发框架
+9. A 股 Level-2 行情数据 API 实战指南
+10. Level-2行情不是"逐笔+十档"就完事！A股主力挂单行为特征提取的4个硬核维度
+11. A股市场微观结构解析工具：从盘口数据到交易决策的量化解决方案
+12. 讲解如何利用 AI 分析订单簿微观结构、检测冰山订单、识别主力资金动向
