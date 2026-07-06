@@ -3,8 +3,8 @@
 > 市场参与者交易行为识别与资金流向分析
 > 天池赛事页：https://tianchi.aliyun.com/competition/entrance/532489
 
-本目录由项目根下的 `baseline教程.txt`、`进阶教程内容.txt`、`Q_A.txt`、`main.py`、
-提交样例与赛制页面整理而成，按主题拆分为独立文档。
+本目录由项目原始资料（`baseline教程.txt`、`进阶教程内容.txt`、`Q_A.txt`，现已并入本 `doc/` 目录）
+与提交样例整理而成，按主题拆分为独立文档。实现方案与计划见 `docs/superpowers/`。
 
 ## 文档清单
 
@@ -21,8 +21,8 @@
 
 - **赛题本质**：无监督 + 无真值的金融高频时序行为识别。Task1 聚类（40%）、Task2 三分类资金识别（60%）。
 - **数据要自己搞**：官方只给 100 只股票代码，L2 明细需自行获取（淘宝/闲鱼/网盘等公开渠道）。
-- **代码现状**：根目录 `main.py` 是**旧版样例 baseline**，数据结构与标签体系均与真实 A/B 榜不符，**不能直接用**（详见文档 06）。
-- **提交现状**：`submit/` 内仅 1 行占位数据且含乱码字符，尚未产出正式结果。
+- **代码现状**：根目录 `main.py` 已重写为**三源 CSV + 三分类**版（模块化 `src/` 包 + `tools/make_sample_data.py` 合成数据 + `tests/` TDD，见 `docs/superpowers/`），可用合成数据端到端跑通；旧版样例保留在 git 历史中。
+- **提交现状**：`python main.py -d <日期>` 产出 `out/pattern_reco.csv` + `out/predict_result.csv`（UTF-8 无 BOM + LF、去代码后缀）；正式提交仍需真实 L2 数据到位。
 
 ## 阅读顺序建议
 
