@@ -1,9 +1,8 @@
 .DS_Store
 ~$*
 .venv/
-submit*.zip
+/submit*.zip
 data/
-out/
 __pycache__/
 .pytest_cache/
 *.pyc
