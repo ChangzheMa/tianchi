@@ -42,14 +42,23 @@ def save_results(df_pat, df_res, out_dir):
     print(f'已保存 {PAT_FILE} / {RES_FILE} 到 {out_dir}')
 
 
-def pack_submission(out_dir, date_tag):
-    """把两个结果 CSV 打包为 submit_<date_tag>.zip（zip 根目录，无路径层级），返回 zip 路径。"""
-    zip_path = os.path.join(out_dir, f'submit_{date_tag}.zip')
+def pack_submission(out_dir, date_tag, version=None, cleanup=False):
+    """把两个结果 CSV 打包为 submit_<date_tag>[_<version>].zip（zip 根目录，无路径层级）。
+    cleanup=True 时打包完删除源 CSV，只保留 zip。返回 zip 路径。"""
+    suffix = f'_{version}' if version else ''
+    zip_path = os.path.join(out_dir, f'submit_{date_tag}{suffix}.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for fn in (PAT_FILE, RES_FILE):
             fp = os.path.join(out_dir, fn)
             if not os.path.exists(fp):
                 raise FileNotFoundError(fp)
             zf.write(fp, arcname=fn)          # arcname 仅文件名 → zip 内无子目录
-    print(f'已打包 {zip_path}')
+    if cleanup:
+        for fn in (PAT_FILE, RES_FILE):
+            fp = os.path.join(out_dir, fn)
+            if os.path.exists(fp):
+                os.remove(fp)
+        print(f'已打包 {zip_path}（已清理中间 CSV）')
+    else:
+        print(f'已打包 {zip_path}')
     return zip_path

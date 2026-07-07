@@ -1,7 +1,7 @@
 """AFAC2026 赛题一 Baseline（精简忠实版）入口。
 
 流程：三源CSV → 特征矩阵 → Task1聚类+模式映射 → Task2三因子资金识别
-      → 分布校准 → 合法输出 pattern_reco.csv / predict_result.csv
+      → 分布校准 → 打包 submit_<日期>_<版本>.zip（中间 CSV 打包后删除，仅留 zip）
 运行：python main.py                         # 默认：全部日期 × 过滤到 stock_sample.csv 的100只
       python main.py -d 20260703 -o ./out     # 指定日期/输出
       python main.py --sample all             # 不过滤，分析该日期全部股票
@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from src import features, task1_pattern, task2_capital, calibrate, io_utils
 from src.config import (N_PATTERNS, PATTERN_NAMES, PATTERN_DESC, PATTERN_RANGE,
-                        CAPITAL_TYPES, CAPITAL_RANGE)
+                        CAPITAL_TYPES, CAPITAL_RANGE, VERSION)
 
 
 def _discover_pairs(data_dir, dates, limit):
@@ -76,7 +76,7 @@ def run(data_dir='./data', dates=None, out_dir='./out', sample=None, limit=None)
     tag = dates[0] if len(dates) == 1 else f'{dates[0]}-{dates[-1]}'
     if len(dates) > 1:
         print(f'[warn] 结果含多个交易日 {dates}，submit 文件名用日期范围 {tag}')
-    io_utils.pack_submission(out_dir, tag)
+    io_utils.pack_submission(out_dir, tag, version=VERSION, cleanup=True)
     print(f'模式分布:\n{pd.Series(pat).value_counts().to_string()}')
     print(f'资金分布:\n{pd.Series(cap).value_counts().to_string()}')
     return df_pat, df_res
