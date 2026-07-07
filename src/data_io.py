@@ -23,6 +23,9 @@ def load_snapshot(stock_code, date_str, base_dir='.'):
     df = pd.read_csv(_path(stock_code, date_str, base_dir, '行情.csv'),
                      encoding='gbk', low_memory=False)
     df = df.rename(columns=HQ_COL_MAP)
+    for c in _HQ_PRICE_COLS:                       # 价格列还原为元
+        if c in df.columns:
+            df[c] = df[c] / PRICE_SCALE
     df['seconds'] = parse_time_to_seconds(df['time'].values)
     df['stock_code'] = str(stock_code)
     df['transaction_date'] = str(date_str)
