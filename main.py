@@ -2,10 +2,10 @@
 
 流程：三源CSV → 特征矩阵 → Task1聚类+模式映射 → Task2三因子资金识别
       → 分布校准 → 合法输出 pattern_reco.csv / predict_result.csv
-运行：python main.py                         # 跑 data/ 下所有日期
+运行：python main.py                         # 默认：全部日期 × 过滤到 stock_sample.csv 的100只
       python main.py -d 20260703 -o ./out     # 指定日期/输出
-      python main.py --sample stock_sample.csv # 过滤到100只目标股票
-      python main.py -n 20                     # 限量调试
+      python main.py --sample all             # 不过滤，分析该日期全部股票
+      python main.py -n 20                     # 每日限跑前N只（调试）
 """
 import os
 import argparse
@@ -62,7 +62,9 @@ def run(data_dir='./data', dates=None, out_dir='./out', sample=None, limit=None)
     df_res['capital_type'] = cap
     df_res['capital_intention'] = intention
 
-    if sample:
+    if sample and sample != 'all':                         # sample='all' → 不过滤，分析全部
+        if not os.path.exists(sample):
+            raise SystemExit(f'样本文件 {sample} 不存在；用 --sample all 分析全部股票，或指定正确路径')
         keep = io_utils.load_stock_sample(sample)          # 去后缀的代码集合
         _sc = df_pat['stock_code'].map(io_utils._strip_suffix)  # 目录名带 .SH，比对前先剥离
         df_pat = df_pat[_sc.isin(keep)]
@@ -85,7 +87,8 @@ def main():
     ap.add_argument('--data', default='./data', help='数据根目录')
     ap.add_argument('--date', '-d', nargs='*', default=None, help='指定日期(可多值)，缺省跑全部')
     ap.add_argument('--out', '-o', default='./out', help='输出目录')
-    ap.add_argument('--sample', default=None, help='stock_sample.csv，过滤到目标股票')
+    ap.add_argument('--sample', default='stock_sample.csv',
+                    help="样本CSV路径，过滤到目标股票；传 all 分析该日期全部股票（默认 stock_sample.csv）")
     ap.add_argument('-n', type=int, default=None, help='每日限跑前 N 只（调试）')
     a = ap.parse_args()
     run(data_dir=a.data, dates=a.date, out_dir=a.out, sample=a.sample, limit=a.n)
