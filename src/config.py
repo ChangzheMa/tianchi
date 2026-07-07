@@ -2,6 +2,14 @@
 
 RANDOM_SEED = 42
 
+# ── 价格量纲：交易所原始价 = 实际价（元）× 10000，成交量不缩放 ──
+#   实测：逐笔Σ(价×量) / 行情当日成交额 = 10000.0
+PRICE_SCALE = 10000
+
+# ── 逐笔委托.委托类型（SSE 逐笔委托语义）──
+ORDER_ADD = 'A'      # 新增委托
+ORDER_CANCEL = 'D'   # 撤单
+
 # ── 行情.csv 中文列名 → 英文 ──
 HQ_COL_MAP = {
     '万得代码': 'code', '交易所代码': 'exch', '自然日': 'date', '时间': 'time',
@@ -16,6 +24,12 @@ for _i in range(1, 11):
     HQ_COL_MAP[f'申卖量{_i}'] = f'ask_vol_{_i}'
     HQ_COL_MAP[f'申买价{_i}'] = f'bid_price_{_i}'
     HQ_COL_MAP[f'申买量{_i}'] = f'bid_vol_{_i}'
+
+# ── 行情快照中需 / PRICE_SCALE 还原为元的价格列（rename 之后的英文名）──
+#   成交额/当日成交额本身已是元，不缩放；申卖量/申买量等成交量列也不缩放
+HQ_PRICE_COLS = (['price', 'high', 'low', 'open', 'prev_close', 'weighted_ask', 'weighted_bid']
+                 + [f'ask_price_{_i}' for _i in range(1, 11)]
+                 + [f'bid_price_{_i}' for _i in range(1, 11)])
 
 # ── OSS 大单分级阈值（按成交额，单位元）──
 OSS_MEGA, OSS_LARGE, OSS_MID = 500000, 100000, 40000

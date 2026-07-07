@@ -1,11 +1,14 @@
 """股票样本读取、结果格式校验与合法输出（UTF-8 无 BOM + LF，去代码后缀）。"""
 import os
 import re
+import zipfile
 import pandas as pd
 from src.config import CAPITAL_TYPES, INTENTIONS
 
 PAT_COLS = ['stock_code', 'transaction_date', 'pattern_type', 'pattern_explanation']
 RES_COLS = ['stock_code', 'transaction_date', 'capital_type', 'capital_intention']
+PAT_FILE = 'pattern_reco.csv'
+RES_FILE = 'predict_result.csv'
 
 
 def _strip_suffix(code):
@@ -32,8 +35,21 @@ def save_results(df_pat, df_res, out_dir):
     df_pat['stock_code'] = df_pat['stock_code'].map(_strip_suffix)
     df_res['stock_code'] = df_res['stock_code'].map(_strip_suffix)
     os.makedirs(out_dir, exist_ok=True)
-    df_pat.to_csv(os.path.join(out_dir, 'pattern_reco.csv'),
+    df_pat.to_csv(os.path.join(out_dir, PAT_FILE),
                   index=False, encoding='utf-8', lineterminator='\n')
-    df_res.to_csv(os.path.join(out_dir, 'predict_result.csv'),
+    df_res.to_csv(os.path.join(out_dir, RES_FILE),
                   index=False, encoding='utf-8', lineterminator='\n')
-    print(f'已保存 pattern_reco.csv / predict_result.csv 到 {out_dir}')
+    print(f'已保存 {PAT_FILE} / {RES_FILE} 到 {out_dir}')
+
+
+def pack_submission(out_dir, date_tag):
+    """把两个结果 CSV 打包为 submit_<date_tag>.zip（zip 根目录，无路径层级），返回 zip 路径。"""
+    zip_path = os.path.join(out_dir, f'submit_{date_tag}.zip')
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for fn in (PAT_FILE, RES_FILE):
+            fp = os.path.join(out_dir, fn)
+            if not os.path.exists(fp):
+                raise FileNotFoundError(fp)
+            zf.write(fp, arcname=fn)          # arcname 仅文件名 → zip 内无子目录
+    print(f'已打包 {zip_path}')
+    return zip_path

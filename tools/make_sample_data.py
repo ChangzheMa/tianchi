@@ -6,9 +6,25 @@
 import os
 import numpy as np
 import pandas as pd
+from src.config import PRICE_SCALE, ORDER_ADD, ORDER_CANCEL
 
 RANDOM_SEED = 42
 ARCHETYPES = ['游资', '量化', '散户']
+
+# 需 × PRICE_SCALE 还原为交易所原始量纲的价格列（模拟真实数据；金额/量列保持不动）
+_PRICE_COLS_CN = (['成交价', '开盘价', '前收盘', '最高价', '最低价',
+                   '加权平均叫卖价', '加权平均叫买价']
+                  + [f'申卖价{i}' for i in range(1, 11)]
+                  + [f'申买价{i}' for i in range(1, 11)])
+
+
+def _scale_price(df, cols):
+    """把元价格列 × PRICE_SCALE 转整数，模拟真实交易所原始量纲。"""
+    df = df.copy()
+    for c in cols:
+        if c in df.columns:
+            df[c] = (df[c] * PRICE_SCALE).round().astype('int64')
+    return df
 
 
 def _sec_to_hhmmssmmm(sec):
@@ -43,7 +59,7 @@ def _gen_trades(rng, archetype, base_price):
 
 
 def _gen_orders(rng, archetype, trades):
-    """按原型生成逐笔委托（含撤单 U）。量化撤单最多。"""
+    """按原型生成逐笔委托（SSE：A新增/D撤单）。量化撤单最多。"""
     n = len(trades)
     if archetype == '量化':
         n_extra, cancel_p = int(n * 1.5), 0.45
@@ -53,7 +69,7 @@ def _gen_orders(rng, archetype, trades):
         n_extra, cancel_p = int(n * 0.4), 0.12
     m = n + n_extra
     secs = np.sort(rng.integers(9 * 3600 + 30 * 60, 15 * 3600, m))
-    otype = rng.choice(['0', 'U'], m, p=[1 - cancel_p, cancel_p])
+    otype = rng.choice([ORDER_ADD, ORDER_CANCEL], m, p=[1 - cancel_p, cancel_p])
     side = rng.choice(['B', 'S'], m)
     price = np.round(trades['成交价格'].mean() * (1 + rng.normal(0, 0.003, m)), 2)
     vol = rng.integers(100, 5000, m)
@@ -114,15 +130,15 @@ def generate(base_dir, date_str='20260618', n_per_type=3):
             trd = _gen_trades(rng, archetype, base_price)
             ordf = _gen_orders(rng, archetype, trd)
             hq = _gen_snapshot(rng, archetype, trd, code, date_str)
-            trd_out = trd.copy()
+            trd_out = _scale_price(trd, ['成交价格'])   # 价格 × PRICE_SCALE，对齐真实数据
             trd_out['时间'] = _sec_to_hhmmssmmm(trd_out['sec'])
             _write_gbk(trd_out[['时间', 'BS标志', '成交价格', '成交数量']],
                        os.path.join(out, '逐笔成交.csv'))
-            ord_out = ordf.copy()
+            ord_out = _scale_price(ordf, ['委托价格'])
             ord_out['时间'] = _sec_to_hhmmssmmm(ord_out['sec'])
             _write_gbk(ord_out[['时间', '委托类型', '委托代码', '委托价格', '委托数量']],
                        os.path.join(out, '逐笔委托.csv'))
-            _write_gbk(hq, os.path.join(out, '行情.csv'))
+            _write_gbk(_scale_price(hq, _PRICE_COLS_CN), os.path.join(out, '行情.csv'))
     return codes
 
 

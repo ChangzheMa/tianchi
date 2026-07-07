@@ -2,7 +2,7 @@
 import os
 import numpy as np
 import pandas as pd
-from src.config import HQ_COL_MAP
+from src.config import HQ_COL_MAP, HQ_PRICE_COLS, PRICE_SCALE
 
 
 def parse_time_to_seconds(time_val):
@@ -23,7 +23,7 @@ def load_snapshot(stock_code, date_str, base_dir='.'):
     df = pd.read_csv(_path(stock_code, date_str, base_dir, '行情.csv'),
                      encoding='gbk', low_memory=False)
     df = df.rename(columns=HQ_COL_MAP)
-    for c in _HQ_PRICE_COLS:                       # 价格列还原为元
+    for c in HQ_PRICE_COLS:                          # 价格列还原为元（÷ PRICE_SCALE）
         if c in df.columns:
             df[c] = df[c] / PRICE_SCALE
     df['seconds'] = parse_time_to_seconds(df['time'].values)
@@ -38,17 +38,19 @@ def load_trades(stock_code, date_str, base_dir='.'):
                      encoding='gbk', low_memory=False)
     df = df.rename(columns={'时间': 'time', 'BS标志': 'side',
                             '成交价格': 'price', '成交数量': 'volume'})
+    df['price'] = df['price'] / PRICE_SCALE         # 还原为元
     df['seconds'] = parse_time_to_seconds(df['time'].values)
-    df['amount'] = df['price'] * df['volume']
+    df['amount'] = df['price'] * df['volume']       # 成交额（元）
     return df.sort_values('seconds').reset_index(drop=True)
 
 
 def load_orders(stock_code, date_str, base_dir='.'):
-    """加载逐笔委托（委托类型 U撤单/1成交/0新增）。"""
+    """加载逐笔委托（SSE：委托类型 A新增/D撤单；委托代码 B买/S卖）。"""
     df = pd.read_csv(_path(stock_code, date_str, base_dir, '逐笔委托.csv'),
                      encoding='gbk', low_memory=False)
     df = df.rename(columns={'时间': 'time', '委托类型': 'order_type', '委托代码': 'side',
                             '委托价格': 'price', '委托数量': 'volume'})
     df['order_type'] = df['order_type'].astype(str)
+    df['price'] = df['price'] / PRICE_SCALE         # 还原为元
     df['seconds'] = parse_time_to_seconds(df['time'].values)
     return df.sort_values('seconds').reset_index(drop=True)

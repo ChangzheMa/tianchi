@@ -26,7 +26,7 @@ def test_load_orders(tmp_path):
     code, date, base = _setup(tmp_path)
     df = data_io.load_orders(code, date, base)
     assert set(['order_type', 'side', 'seconds']).issubset(df.columns)
-    assert df['order_type'].isin(['0', 'U', '1']).any()
+    assert df['order_type'].isin(['A', 'D']).any()
 
 def test_missing_file_raises(tmp_path):
     import pytest

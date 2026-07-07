@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 from src import data_io
 from src.config import (OSS_MEGA, OSS_LARGE, OSS_MID, SESSION_START, SESSION_END,
-                        PATTERN_CONDITIONS, SCORE_WEIGHTS, BEHAVIOR_FEATURES)
+                        PATTERN_CONDITIONS, SCORE_WEIGHTS, BEHAVIOR_FEATURES,
+                        ORDER_CANCEL)
 
 EPS = 1e-8
 
@@ -72,7 +73,7 @@ def extract_features(stock_code, date_str, base_dir='.'):
     # ── CB 撤单行为 ──
     no = len(ordf)
     if no:
-        cancel = ordf['order_type'] == 'U'
+        cancel = ordf['order_type'] == ORDER_CANCEL
         n_cancel = int(cancel.sum())
         f['cb_cancel_ratio'] = n_cancel / no
         f['cb_trade_ord_ratio'] = (ordf['order_type'] == '1').sum() / no
@@ -193,7 +194,7 @@ def extract_features(stock_code, date_str, base_dir='.'):
                   'fd_buy_sell_asymmetry', 'fd_amount_entropy', 'fd_interval_autocorr', 'fd_streak_max']:
             f[k] = 0.0
     if no:
-        civ = ordf.loc[ordf['order_type'] == 'U', 'seconds'].diff().dropna()
+        civ = ordf.loc[ordf['order_type'] == ORDER_CANCEL, 'seconds'].diff().dropna()
         f['fd_cancel_burst_ratio'] = (civ < 1).sum() / len(civ) if len(civ) else 0.0
     else:
         f['fd_cancel_burst_ratio'] = 0.0

@@ -3,7 +3,7 @@
 流程：三源CSV → 特征矩阵 → Task1聚类+模式映射 → Task2三因子资金识别
       → 分布校准 → 合法输出 pattern_reco.csv / predict_result.csv
 运行：python main.py                         # 跑 data/ 下所有日期
-      python main.py -d 20260618 -o ./out     # 指定日期/输出
+      python main.py -d 20260703 -o ./out     # 指定日期/输出
       python main.py --sample 股票样本.xlsx    # 过滤到100只目标股票
       python main.py -n 20                     # 限量调试
 """
@@ -63,12 +63,18 @@ def run(data_dir='./data', dates=None, out_dir='./out', sample=None, limit=None)
     df_res['capital_intention'] = intention
 
     if sample:
-        keep = io_utils.load_stock_sample(sample)
-        df_pat = df_pat[df_pat['stock_code'].astype(str).isin(keep)]
-        df_res = df_res[df_res['stock_code'].astype(str).isin(keep)]
+        keep = io_utils.load_stock_sample(sample)          # 去后缀的代码集合
+        _sc = df_pat['stock_code'].map(io_utils._strip_suffix)  # 目录名带 .SH，比对前先剥离
+        df_pat = df_pat[_sc.isin(keep)]
+        df_res = df_res[df_res['stock_code'].map(io_utils._strip_suffix).isin(keep)]
 
     print('[4/4] 校验与保存')
     io_utils.save_results(df_pat, df_res, out_dir)
+    dates = sorted(df_res['transaction_date'].astype(str).unique())
+    tag = dates[0] if len(dates) == 1 else f'{dates[0]}-{dates[-1]}'
+    if len(dates) > 1:
+        print(f'[warn] 结果含多个交易日 {dates}，submit 文件名用日期范围 {tag}')
+    io_utils.pack_submission(out_dir, tag)
     print(f'模式分布:\n{pd.Series(pat).value_counts().to_string()}')
     print(f'资金分布:\n{pd.Series(cap).value_counts().to_string()}')
     return df_pat, df_res
