@@ -42,11 +42,12 @@ def save_results(df_pat, df_res, out_dir):
     print(f'已保存 {PAT_FILE} / {RES_FILE} 到 {out_dir}')
 
 
-def pack_submission(out_dir, date_tag, version=None, cleanup=False):
-    """把两个结果 CSV 打包为 submit_<date_tag>[_<version>].zip（zip 根目录，无路径层级）。
+def pack_submission(out_dir, date_tag, version=None, cleanup=False, prefix='submit'):
+    """把两个结果 CSV 打包为 <prefix>_<date_tag>[_<version>].zip（zip 根目录，无路径层级）。
+    prefix 缺省 submit；单任务模式传 task1/task2 → taskN_<日期>_<版本>.zip。
     cleanup=True 时打包完删除源 CSV，只保留 zip。返回 zip 路径。"""
     suffix = f'_{version}' if version else ''
-    zip_path = os.path.join(out_dir, f'submit_{date_tag}{suffix}.zip')
+    zip_path = os.path.join(out_dir, f'{prefix}_{date_tag}{suffix}.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for fn in (PAT_FILE, RES_FILE):
             fp = os.path.join(out_dir, fn)
