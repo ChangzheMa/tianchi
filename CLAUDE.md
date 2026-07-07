@@ -33,7 +33,7 @@ stock_code,transaction_date,capital_type,capital_intention
 - 100 行（对应 100 只股票）
 
 ### 股票列表
-来源于 `股票样本.xlsx`，共 100 只沪市股票，提交时去掉 `.SH` 后缀。
+来源于 `stock_sample.csv`（由官方 `股票样本.xlsx` 转存，列 `stock_code,stock_name`），共 100 只沪市股票，提交时去掉 `.SH` 后缀。
 
 ### 评分
 - 总分 = 交易模式识别分 × 0.4 + 参与者识别分 × 0.6

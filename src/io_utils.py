@@ -16,8 +16,8 @@ def _strip_suffix(code):
 
 
 def load_stock_sample(path):
-    """读 股票样本.xlsx，返回去后缀的代码集合。"""
-    df = pd.read_excel(path, engine='openpyxl', dtype=str)
+    """读 stock_sample.csv，返回去后缀的代码集合。"""
+    df = pd.read_csv(path, dtype=str)
     col = next((c for c in df.columns if df[c].astype(str).str.contains(r'\d{6}').any()), df.columns[0])
     return {_strip_suffix(x) for x in df[col].dropna()}
 

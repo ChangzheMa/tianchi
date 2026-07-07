@@ -4,7 +4,7 @@
       → 分布校准 → 合法输出 pattern_reco.csv / predict_result.csv
 运行：python main.py                         # 跑 data/ 下所有日期
       python main.py -d 20260703 -o ./out     # 指定日期/输出
-      python main.py --sample 股票样本.xlsx    # 过滤到100只目标股票
+      python main.py --sample stock_sample.csv # 过滤到100只目标股票
       python main.py -n 20                     # 限量调试
 """
 import os
@@ -85,7 +85,7 @@ def main():
     ap.add_argument('--data', default='./data', help='数据根目录')
     ap.add_argument('--date', '-d', nargs='*', default=None, help='指定日期(可多值)，缺省跑全部')
     ap.add_argument('--out', '-o', default='./out', help='输出目录')
-    ap.add_argument('--sample', default=None, help='股票样本.xlsx，过滤到目标股票')
+    ap.add_argument('--sample', default=None, help='stock_sample.csv，过滤到目标股票')
     ap.add_argument('-n', type=int, default=None, help='每日限跑前 N 只（调试）')
     a = ap.parse_args()
     run(data_dir=a.data, dates=a.date, out_dir=a.out, sample=a.sample, limit=a.n)
